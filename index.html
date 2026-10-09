@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumora: data analysis made simple</title>
+  <meta name="description" content="Drop in a spreadsheet and Lumora explains your data in plain English, with automatic insights, charts and guided lessons.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235b5bd6'/><path d='M8 22l5-7 4 4 7-10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <button id="home-btn" class="brand" type="button" title="Back to start" hidden>
+      <span class="logo" aria-hidden="true"></span><span>Lumora</span>
+    </button>
+    <span class="brand static"><span class="logo" aria-hidden="true"></span><span>Lumora</span></span>
+    <span id="dataset-name" class="dataset-name" hidden></span>
+    <div class="top-actions">
+      <label class="switch" title="Show plain-English explanations throughout the app">
+        <input id="learn-toggle" type="checkbox">
+        <span class="switch-track" aria-hidden="true"></span>
+        <span>Learn mode</span>
+      </label>
+      <button id="theme-btn" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <button id="open-btn" class="btn primary" type="button">Open file</button>
+    </div>
+  </header>
+
+  <main id="app" tabindex="-1"></main>
+
+  <input id="file-input" type="file" accept=".csv,.tsv,.txt,.json,text/csv,application/json" hidden>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <dialog id="dialog"></dialog>
+  <div class="drop-overlay" aria-hidden="true"><div>Drop your file to analyse it</div></div>
+
+  <noscript>Lumora needs JavaScript to run.</noscript>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "lumora",
+  "version": "0.1.0",
+  "description": "Data analysis that is easy to use and easy to learn. Runs entirely in the browser.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/serve.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
