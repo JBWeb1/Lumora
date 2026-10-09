@@ -9,6 +9,7 @@ import { generateInsights } from '../src/core/insights.js';
 import { buildChartData, suggestChart } from '../src/core/chartspec.js';
 import { SAMPLES, sampleCSV } from '../src/core/samples.js';
 import { GLOSSARY, LESSONS } from '../src/core/learn.js';
+import { applyStep } from '../src/core/clean.js';
 
 test('parseCSV handles quotes, escaped quotes, newlines in fields and CRLF', () => {
   const text = 'name,note\r\n"Smith, J","said ""hi"""\r\n"multi\nline",x\r\n\r\n';
@@ -183,7 +184,20 @@ test('every lesson refers to real columns and glossary terms', () => {
     const names = ds.columns.map((c) => c.name);
     const refs = [lesson.try.chart?.x, lesson.try.chart?.y, lesson.try.summarize?.by, ...(lesson.try.summarize?.aggs ?? []).map((a) => a.column)];
     for (const r of refs.filter(Boolean)) assert.ok(names.includes(r), `${lesson.id}: unknown column ${r}`);
+    if (lesson.try.clean) {
+      const { missingCol, formula, formulaName } = lesson.try.clean;
+      assert.ok(names.includes(missingCol), `${lesson.id}: unknown column ${missingCol}`);
+      const out = applyStep(ds, { op: 'formula', name: formulaName, formula });
+      assert.equal(out.columns.at(-1).type, 'number');
+    }
   }
+});
+
+test('duplicate rows are reported with a link to the Clean tab', () => {
+  const ds = datasetFromText('a,b\n1,x\n1,x\n2,y\n', 'd.csv');
+  const ins = generateInsights(ds).find((i) => /duplicate/.test(i.title));
+  assert.equal(ins.title, '1 duplicate row');
+  assert.equal(ins.action.tab, 'clean');
 });
 
 test('insights handle an empty selection', () => {

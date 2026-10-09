@@ -34,6 +34,24 @@ export function generateInsights(dataset, indices) {
     insights.push({ kind: 'info', title: 'No missing values', detail: 'Every cell has a value. Nice, clean data.', term: 'missing' });
   }
 
+  // Exact duplicate rows
+  const seen = new Set();
+  let duplicates = 0;
+  for (const i of rows) {
+    const key = dataset.columns.map((c) => c.raw[i]).join('\u0001');
+    if (seen.has(key)) duplicates++;
+    else seen.add(key);
+  }
+  if (duplicates) {
+    insights.push({
+      kind: 'warning',
+      title: `${duplicates} duplicate row${duplicates > 1 ? 's' : ''}`,
+      detail: 'Some rows are exact copies of earlier rows. If they were recorded twice by mistake, they will inflate counts and totals.',
+      term: 'cleaning',
+      action: { tab: 'clean', label: 'Fix it →' },
+    });
+  }
+
   const numeric = cols.filter((c) => c.type === 'number');
 
   // Correlations

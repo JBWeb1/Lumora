@@ -6,14 +6,18 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 
 ## Features
 
-- **Instant loading.** Drag and drop (or paste) CSV, TSV or JSON. Lumora detects the delimiter and works out each column's type: number, date, yes/no, category or text. You can override any type with one click.
+- **Instant loading.** Drag and drop (or paste) **Excel (.xlsx)**, CSV, TSV or JSON. Workbooks with several sheets ask which sheet to open. Lumora detects the delimiter and works out each column's type: number, date, yes/no, category or text. You can override any type with one click.
 - **Automatic insights.** It finds missing data, strong correlations, outliers, skewed columns, big differences between groups, ID columns and date ranges. A **Show me →** button opens the chart that proves each finding.
 - **Column profiles.** Each column gets a mini histogram or top values, plus a full statistics panel (mean, median, quartiles, IQR, skewness, outliers, …).
 - **Chart builder with "Auto" mode.** Choose columns and Lumora picks a histogram, bar, scatter (with trend line and R²), line (with moving average) or box plot, and explains *why* it chose that chart.
+- **"Is this real, or just luck?"** Below each chart, Lumora runs the right significance test (correlation test, Welch's t-test, one-way ANOVA or chi-square). It explains the p-value, the effect size and the confidence interval in plain English.
+- **Clean tab with undo.** Remove duplicates, fill or drop missing values (median, mean, most common, previous row, or a value you choose), tidy text, rename or delete columns, and make filters permanent. Every action is recorded as a step, so you can undo with Ctrl+Z or start over. The original file is never changed.
+- **Calculated columns** with a safe formula language, e.g. `round(revenue / customers, 2)` or `if(temperature_c > 20, "hot", "cold")`. It shows a live preview and suggests a fix when you mistype a column name.
+- **Color-by-category scatter plots** and **chart downloads** as high-resolution PNG or SVG.
 - **Filters** that apply everywhere: overview, table, charts and summaries.
 - **Group & summarize** (pivot tables) with count, sum, mean, median, min, max, standard deviation and distinct counts. Dates can be grouped by day, month, year or weekday.
 - **Searchable, sortable table** and **CSV export** of filtered data and summaries.
-- **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **six guided lessons** use built-in practice datasets.
+- **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **eight guided lessons** use built-in practice datasets.
 - Light and dark themes, a layout that works on phones, and no dependencies.
 
 ## Run it
@@ -37,6 +41,10 @@ src/core/                 Pure, tested logic (no DOM):
   stats.js                  descriptive stats, histogram, correlation, regression
   transform.js              filter, sort, group-by, formatting, export
   insights.js               automatic plain-English findings
+  clean.js                  replayable cleaning steps (powers undo)
+  formula.js                safe formula parser/evaluator for calculated columns
+  significance.js           t-test, ANOVA, chi-square, correlation test + verdicts
+  xlsx.js                   dependency-free Excel reader
   chartspec.js              chart suggestion and chart data preparation
   learn.js                  glossary and guided lessons
   samples.js                deterministic practice datasets
@@ -45,11 +53,10 @@ tests/                    node:test unit tests
 
 ## Roadmap ideas
 
-1. **Excel (.xlsx) import** and connections to Google Sheets and databases.
-2. **Ask in plain English.** "Which weekday has the highest revenue?" turns into the right filter, group and chart (powered by an LLM).
-3. **Data cleaning.** Fill or drop missing values, rename columns, split or merge columns, remove duplicates, with an undoable step history.
-4. **Calculated columns** with friendly formulas.
-5. **Statistical tests explained simply:** t-test and chi-square ("Is this difference real or luck?").
-6. **Dashboards and reports.** Pin charts, add notes, and share as a link or PDF.
-7. **Web Worker processing** for files with millions of rows.
-8. **Progress tracking** for lessons, plus quizzes and achievements.
+1. **Ask in plain English.** "Which weekday has the highest revenue?" turns into the right filter, group and chart (powered by an LLM).
+2. **Dashboards and reports.** Pin charts, add notes, and share as a link or PDF.
+3. **Save projects** (data + cleaning steps + charts) and reopen them later.
+4. **Simple forecasting** and multiple regression ("what drives exam scores?").
+5. **Connections** to Google Sheets and databases.
+6. **Web Worker processing** for files with millions of rows.
+7. **Progress tracking** for lessons, plus quizzes and achievements.

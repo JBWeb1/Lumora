@@ -1,4 +1,8 @@
-import { datasetFromText, setColumnType, TYPES } from './core/infer.js';
+import { buildDataset, datasetFromText, TYPES } from './core/infer.js';
+import { applyStep, describeStep, duplicateRows, runRecipe } from './core/clean.js';
+import { FUNCTIONS, evaluateFormula } from './core/formula.js';
+import { testColumns } from './core/significance.js';
+import { readXlsx } from './core/xlsx.js';
 import { describe, frequencies, histogram, numbers, correlationMatrix, correlationStrength } from './core/stats.js';
 import {
   AGGREGATIONS, FILTER_OPS, NO_VALUE_OPS, applyFilters, datasetToCSV, formatDate, formatNumber, formatValue,
@@ -10,6 +14,7 @@ import { GLOSSARY, LESSONS } from './core/learn.js';
 import { SAMPLES, sampleCSV } from './core/samples.js';
 import { el, clear, select, download, installTooltip } from './ui/dom.js';
 import { renderChart, heatmap, sparkHistogram } from './ui/charts.js';
+import { exportChart } from './ui/export.js';
 
 // ---------- state ----------
 
@@ -32,12 +37,15 @@ const store = {
 };
 
 const state = {
+  original: null, // the data exactly as loaded
+  steps: [], // cleaning steps applied on top of it (replayed for undo)
   dataset: null,
   filters: [],
   tab: 'overview',
   learn: store.get('learn', true),
   table: { sort: null, dir: 'asc', page: 0, search: '' },
-  chart: { type: 'auto', x: null, y: null, agg: 'mean' },
+  chart: { type: 'auto', x: null, y: null, agg: 'mean', color: null },
+  clean: {},
   summarize: { by: null, dateUnit: 'month', aggs: [{ fn: 'count', column: null }] },
   addingFilter: null,
 };
@@ -49,6 +57,7 @@ const TABS = [
   { id: 'table', label: 'Table', icon: '▦' },
   { id: 'chart', label: 'Chart', icon: '∿' },
   { id: 'summarize', label: 'Summarize', icon: 'Σ' },
+  { id: 'clean', label: 'Clean', icon: '✎' },
   { id: 'learn', label: 'Learn', icon: '?' },
 ];
 
@@ -129,18 +138,44 @@ function chooseDefaults() {
   state.summarize = { by, dateUnit: 'month', aggs: [{ fn: 'count', column: null }, ...(num >= 0 ? [{ fn: 'mean', column: num }] : [])] };
 }
 
+function loadDataset(ds) {
+  if (!ds.columns.length || !ds.rowCount) throw new Error('No rows found. Is the first line a header row?');
+  state.original = ds;
+  state.steps = [];
+  state.dataset = ds;
+  state.clean = {};
+  state.addingFilter = null;
+  chooseDefaults();
+  state.tab = 'overview';
+  update();
+}
+
 function loadText(text, fileName) {
   try {
-    const ds = datasetFromText(text, fileName);
-    if (!ds.columns.length || !ds.rowCount) throw new Error('No rows found. Is the first line a header row?');
-    state.dataset = ds;
-    chooseDefaults();
-    state.tab = 'overview';
-    update();
+    loadDataset(datasetFromText(text, fileName));
     return true;
   } catch (err) {
     toast(`Couldn't read ${fileName}: ${err.message}`);
     return false;
+  }
+}
+
+async function loadExcel(buffer, fileName) {
+  const base = fileName.replace(/\.[^.]+$/, '');
+  try {
+    const sheets = await readXlsx(buffer);
+    const open = (sheet) => loadDataset(buildDataset(sheets.length > 1 ? `${base} · ${sheet.name}` : base, sheet.headers, sheet.rows));
+    if (sheets.length === 1) {
+      open(sheets[0]);
+      return;
+    }
+    openDialog('Choose a sheet',
+      el('p', { class: 'muted' }, `${fileName} has ${sheets.length} sheets with data.`),
+      el('div', { class: 'sheet-list' }, sheets.map((s) =>
+        el('button', { class: 'card sheet', type: 'button', onclick: () => { $dialog.close(); open(s); } },
+          el('strong', {}, s.name), el('span', { class: 'muted' }, `${plural(s.rows.length, 'row')} · ${plural(s.headers.length, 'column')}`)))));
+  } catch (err) {
+    toast(`Couldn't read ${fileName}: ${err.message}`);
   }
 }
 
@@ -150,10 +185,16 @@ function loadFile(file) {
     toast('That file is over 200 MB. Lumora runs in your browser and works best with files under 50 MB.');
     return;
   }
+  if (/\.xls$/i.test(file.name)) {
+    toast('Old .xls files aren\'t supported. In Excel choose File → Save As → Excel Workbook (.xlsx) or CSV.');
+    return;
+  }
+  const excel = /\.(xlsx|xlsm)$/i.test(file.name);
   const reader = new FileReader();
-  reader.onload = () => loadText(String(reader.result), file.name);
+  reader.onload = () => (excel ? loadExcel(reader.result, file.name) : loadText(String(reader.result), file.name));
   reader.onerror = () => toast(`Couldn't open ${file.name}.`);
-  reader.readAsText(file);
+  if (excel) reader.readAsArrayBuffer(file);
+  else reader.readAsText(file);
 }
 
 function loadSample(id) {
@@ -163,10 +204,10 @@ function loadSample(id) {
 
 function runLesson(lesson) {
   const t = lesson.try;
-  if (state.dataset?.name !== SAMPLES.find((s) => s.id === t.sample).name) loadSample(t.sample);
+  if (state.dataset?.name !== SAMPLES.find((s) => s.id === t.sample).name || state.steps.length) loadSample(t.sample);
   else state.filters = [];
   if (t.chart) {
-    state.chart = { type: t.chart.type ?? 'auto', x: colIndex(t.chart.x), y: t.chart.y ? colIndex(t.chart.y) : null, agg: 'mean' };
+    state.chart = { type: t.chart.type ?? 'auto', x: colIndex(t.chart.x), y: t.chart.y ? colIndex(t.chart.y) : null, agg: 'mean', color: null };
   }
   if (t.summarize) {
     state.summarize = {
@@ -175,6 +216,7 @@ function runLesson(lesson) {
       aggs: t.summarize.aggs.map((a) => ({ fn: a.fn, column: a.column ? colIndex(a.column) : null })),
     };
   }
+  if (t.clean) state.clean = { ...t.clean };
   state.tab = t.tab;
   update();
   toast(lesson.title.replace(/^\d+\.\s*/, 'Lesson: '), 'info');
@@ -186,7 +228,7 @@ function renderHome() {
   const drop = el('button', { class: 'dropzone', type: 'button', onclick: () => $fileInput.click() },
     el('div', { class: 'drop-icon', 'aria-hidden': 'true' }, '⇪'),
     el('div', { class: 'drop-title' }, 'Drop a file here, or click to choose'),
-    el('div', { class: 'muted' }, 'CSV, TSV or JSON. Your data stays on your computer and is never uploaded.'));
+    el('div', { class: 'muted' }, 'Excel, CSV, TSV or JSON. Your data stays on your computer and is never uploaded.'));
 
   return el('div', { class: 'home' },
     el('section', { class: 'hero' },
@@ -206,7 +248,8 @@ function renderHome() {
     el('section', { class: 'steps' },
       [['1', 'Load', 'Drop in a file. Lumora detects numbers, dates and categories for you.'],
        ['2', 'Explore', 'Get automatic insights, column profiles and a searchable table.'],
-       ['3', 'Answer', 'Filter, group and chart to answer your question, then export the results.']]
+       ['3', 'Clean', 'Fix duplicates and missing values, and add calculated columns, with undo.'],
+       ['4', 'Answer', 'Filter, group, chart and test whether differences are real, then export.']]
         .map(([n, t, d]) => el('div', { class: 'step' }, el('span', { class: 'step-n' }, n), el('div', {}, el('strong', {}, t), el('p', { class: 'muted' }, d))))));
 }
 
@@ -228,7 +271,7 @@ function renderWorkspace() {
       onclick: () => { state.tab = t.id; render(); },
     }, el('span', { class: 'tab-icon', 'aria-hidden': 'true' }, t.icon), t.label)));
 
-  const views = { overview: renderOverview, table: renderTable, chart: renderChartTab, summarize: renderSummarize, learn: renderLearn };
+  const views = { overview: renderOverview, table: renderTable, chart: renderChartTab, summarize: renderSummarize, clean: renderClean, learn: renderLearn };
   return el('div', { class: 'workspace' }, nav, state.tab !== 'learn' && renderFilterBar(), el('div', { class: 'view' }, views[state.tab]()));
 }
 
@@ -247,7 +290,10 @@ function renderFilterBar() {
       el('span', { class: 'chip' }, describeFilter(f),
         el('button', { class: 'chip-x', 'aria-label': `Remove filter ${describeFilter(f)}`, onclick: () => { state.filters.splice(i, 1); state.table.page = 0; update(); } }, '✕'))),
     state.addingFilter ? filterForm() : el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.addingFilter = { column: 0, op: FILTER_OPS[cols()[0].type][0], value: '' }; render(); } }, '+ Filter'),
-    state.filters.length > 1 && el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.filters = []; update(); } }, 'Clear all'));
+    state.filters.length > 1 && el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.filters = []; update(); } }, 'Clear all'),
+    state.steps.length > 0 && el('span', { class: 'steps-pill' },
+      el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.tab = 'clean'; render(); } }, `✎ ${plural(state.steps.length, 'cleaning step')}`),
+      el('button', { class: 'btn small', type: 'button', title: `Undo: ${describeStep(state.steps.at(-1))} (Ctrl+Z)`, onclick: undo }, '↶ Undo')));
   return el('div', {}, bar, state.addingFilter && learnTip('filter'));
 }
 
@@ -337,12 +383,17 @@ function insightCard(ins) {
       el('h3', {}, ins.title),
       el('p', {}, ins.detail),
       el('div', { class: 'insight-actions' },
-        ins.action && el('button', { class: 'btn small', type: 'button', onclick: () => showAction(ins.action) }, 'Show me →'),
+        ins.action && el('button', { class: 'btn small', type: 'button', onclick: () => showAction(ins.action) }, ins.action.label ?? 'Show me →'),
         ins.term && termLink(ins.term, `What is ${GLOSSARY[ins.term].term.toLowerCase()}?`))));
 }
 
 function showAction(action) {
-  state.chart = { type: action.type, x: action.x, y: action.y ?? null, agg: 'mean' };
+  if (action.tab) {
+    state.tab = action.tab;
+    render();
+    return;
+  }
+  state.chart = { type: action.type, x: action.x, y: action.y ?? null, agg: 'mean', color: null };
   state.tab = 'chart';
   render();
 }
@@ -381,8 +432,7 @@ function columnCard(col, index) {
       el('h3', { title: col.name }, col.name)),
     el('div', { class: 'col-meta' },
       select(TYPES.map((t) => ({ value: t, label: TYPE_LABELS[t] + (t === col.inferredType ? ' (detected)' : '') })), col.type, (t) => {
-        setColumnType(state.dataset, index, t);
-        update();
+        addStep({ op: 'setType', column: col.name, type: t });
       }, { class: 'type-select', 'aria-label': `Type of ${col.name}` }),
       missingPct > 0 && el('span', { class: 'pill warn' }, `${missingPct < 1 ? '<1' : Math.round(missingPct)}% missing`)),
     body,
@@ -425,7 +475,7 @@ function openProfile(index) {
     el('table', { class: 'profile-table' }, el('tbody', {}, rows.map(([k, v, t]) => el('tr', {}, el('th', {}, t ? termLink(t, k) : k), el('td', {}, String(v)))))),
     chartData && !chartData.error && el('div', { class: 'chart-wrap' }, renderChart(chartData)),
     el('div', { class: 'dialog-actions' },
-      el('button', { class: 'btn primary small', onclick: () => { $dialog.close(); state.chart = { type: 'auto', x: index, y: null, agg: 'mean' }; state.tab = 'chart'; render(); } }, 'Open in chart builder'),
+      el('button', { class: 'btn primary small', onclick: () => { $dialog.close(); state.chart = { type: 'auto', x: index, y: null, agg: 'mean', color: null }; state.tab = 'chart'; render(); } }, 'Open in chart builder'),
       el('button', { class: 'btn small', onclick: () => { $dialog.close(); state.table.sort = index; state.table.dir = 'desc'; state.tab = 'table'; render(); } }, 'Sort table by this column')));
 }
 
@@ -489,7 +539,7 @@ function renderChartTab() {
   const yCol = ch.y == null ? null : c[ch.y];
   const suggestion = suggestChart(xCol, yCol);
   const type = ch.type === 'auto' ? suggestion.type : ch.type;
-  const data = type ? buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg }) : { error: suggestion.reason };
+  const data = type ? buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg, color: ch.color }) : { error: suggestion.reason };
   const usesAgg = yCol?.type === 'number' && (type === 'bar' || type === 'line');
   const colOptions = c.map((col, i) => ({ value: i, label: `${TYPE_ICONS[col.type]}  ${col.name}` }));
 
@@ -498,14 +548,40 @@ function renderChartTab() {
     el('button', { class: 'icon-btn swap', type: 'button', title: 'Swap X and Y', disabled: ch.y == null, onclick: () => { [ch.x, ch.y] = [ch.y, ch.x]; render(); } }, '⇄'),
     field('Y axis (optional)', select([{ value: '', label: '— none —' }, ...colOptions], ch.y ?? '', (v) => { ch.y = v === '' ? null : +v; render(); })),
     field('Chart type', select([{ value: 'auto', label: `✨ Auto (${CHART_TYPES[suggestion.type]?.label ?? '–'})` }, ...Object.entries(CHART_TYPES).map(([k, v]) => ({ value: k, label: v.label }))], ch.type, (v) => { ch.type = v; render(); })),
-    usesAgg && field('Combine values with', select(Object.entries(AGGREGATIONS).filter(([k]) => k !== 'distinct').map(([k, v]) => ({ value: k, label: v.label })), ch.agg, (v) => { ch.agg = v; render(); })));
+    usesAgg && field('Combine values with', select(Object.entries(AGGREGATIONS).filter(([k]) => k !== 'distinct').map(([k, v]) => ({ value: k, label: v.label })), ch.agg, (v) => { ch.agg = v; render(); })),
+    type === 'scatter' && field('Color by (optional)', select(
+      [{ value: '', label: '— none —' }, ...c.map((col, i) => ({ col, i })).filter(({ col }) => col.type === 'category' || col.type === 'boolean').map(({ col, i }) => ({ value: i, label: col.name }))],
+      ch.color ?? '', (v) => { ch.color = v === '' ? null : +v; render(); })));
 
+  const chartEl = data.error ? null : renderChart(data);
+  const title = data.error ? '' : [data.yLabel ?? data.valueLabel, data.xLabel ?? data.groupLabel].filter(Boolean).join(' by ');
   return el('div', { class: 'chart-view' },
     controls,
     el('div', { class: 'card chart-card' },
       ch.type === 'auto' && type && el('p', { class: 'why' }, el('strong', {}, 'Why this chart? '), suggestion.reason),
-      data.error ? el('div', { class: 'empty' }, data.error) : [el('div', { class: 'chart-wrap' }, renderChart(data)), chartNotes(data)]),
+      data.error ? el('div', { class: 'empty' }, data.error) : [
+        el('div', { class: 'chart-wrap' }, chartEl),
+        chartNotes(data),
+        el('div', { class: 'chart-export' },
+          el('span', { class: 'muted small' }, 'Download chart:'),
+          el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'png') }, '⇩ PNG'),
+          el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'svg') }, '⇩ SVG')),
+      ]),
+    significanceCard(ch),
     type && learnTip(CHART_TYPES[type].term));
+}
+
+function significanceCard(ch) {
+  const res = testColumns(state.dataset, indices, ch.x, ch.y);
+  if (!res) return null;
+  return el('section', { class: `card significance ${res.verdict.level}` },
+    el('div', { class: 'sig-head' },
+      el('h3', {}, 'Is this real, or just luck?'),
+      el('span', { class: 'sig-badge' }, { strong: 'Strong evidence', moderate: 'Some evidence', weak: 'Inconclusive', none: 'No evidence' }[res.verdict.level])),
+    el('p', { class: 'sig-headline' }, res.headline),
+    el('ul', {}, res.details.map((d) => el('li', {}, d))),
+    res.caution && el('p', { class: 'muted small' }, '⚠ ', res.caution),
+    el('p', { class: 'muted small' }, 'Method: ', termLink(res.term, res.test), ' · ', termLink('pvalue', 'What is a p-value?')));
 }
 
 function field(label, control) {
@@ -589,6 +665,203 @@ function renderSummarize() {
       el('button', { class: 'btn small', onclick: () => download(`${state.dataset.name}-summary.csv`, toCSV(result.headers, result.rows)) }, '⇩ Export summary CSV')));
 }
 
+// ---------- cleaning steps ----------
+
+/** Column references in the UI are indices; remember them by name so they survive steps. */
+function snapshotRefs() {
+  const name = (i) => (i == null || i < 0 ? null : cols()[i]?.name ?? null);
+  return {
+    chart: { x: name(state.chart.x), y: name(state.chart.y), color: name(state.chart.color) },
+    by: name(state.summarize.by),
+    aggs: state.summarize.aggs.map((a) => ({ ...a, column: name(a.column) })),
+    filters: state.filters.map((f) => ({ ...f, column: name(f.column) })),
+    sort: name(state.table.sort),
+  };
+}
+
+function restoreRefs(refs, renames) {
+  const idx = (n) => {
+    if (n == null) return null;
+    const i = colIndex(renames[n] ?? n);
+    return i < 0 ? null : i;
+  };
+  state.chart.x = idx(refs.chart.x) ?? 0;
+  state.chart.y = idx(refs.chart.y);
+  state.chart.color = idx(refs.chart.color);
+  state.summarize.by = idx(refs.by) ?? 0;
+  state.summarize.aggs = refs.aggs.map((a) => ({ ...a, column: idx(a.column) })).filter((a) => a.fn === 'count' || a.column != null);
+  if (!state.summarize.aggs.length) state.summarize.aggs = [{ fn: 'count', column: null }];
+  state.filters = refs.filters.map((f) => ({ ...f, column: idx(f.column) })).filter((f) => f.column != null);
+  state.table.sort = idx(refs.sort);
+}
+
+function setSteps(steps, renames = {}) {
+  let ds;
+  try {
+    ds = runRecipe(state.original, steps);
+  } catch (err) {
+    toast(err.message);
+    return false;
+  }
+  const refs = snapshotRefs();
+  state.steps = steps;
+  state.dataset = ds;
+  state.addingFilter = null;
+  restoreRefs(refs, renames);
+  update();
+  return true;
+}
+
+function addStep(step) {
+  if (step.op === 'keepRows') state.filters = [];
+  if (setSteps([...state.steps, step], step.op === 'rename' ? { [step.column]: step.to } : {})) toast(`✓ ${describeStep(step)}`, 'info');
+}
+
+function undo() {
+  const last = state.steps.at(-1);
+  if (!last) return;
+  if (setSteps(state.steps.slice(0, -1), last.op === 'rename' ? { [last.to]: last.column } : {})) toast(`Undid: ${describeStep(last)}`, 'info');
+}
+
+// ---------- clean ----------
+
+function renderClean() {
+  const ds = state.dataset;
+  const c = cols();
+  const f = state.clean;
+  const names = c.map((col) => col.name);
+  const pick = (key, fallback) => (names.includes(f[key]) ? f[key] : (f[key] = fallback));
+  const missingCounts = new Map(c.map((col) => [col.name, col.values.reduce((n, v) => n + (v == null), 0)]));
+  const withMissing = names.filter((n) => missingCounts.get(n) > 0);
+  const dupCount = duplicateRows(ds).length;
+
+  // Missing values
+  const missingCol = pick('missingCol', withMissing[0] ?? names[0]);
+  const missingType = c[colIndex(missingCol)].type;
+  const methods = [
+    ['drop', 'Remove those rows'],
+    ...(missingType === 'number' ? [['median', 'Fill with the median'], ['mean', 'Fill with the average']] : []),
+    ['mode', 'Fill with the most common value'],
+    ['previous', "Fill with the previous row's value"],
+    ['value', 'Fill with a value I choose'],
+  ];
+  if (!methods.some(([m]) => m === f.missingMethod)) f.missingMethod = methods[1][0];
+  const missingCard = actionCard('Missing values', 'missing',
+    withMissing.length ? `${plural(withMissing.length, 'column')} ${withMissing.length === 1 ? 'has' : 'have'} gaps.` : 'No missing values. Nothing to fix here.',
+    el('div', { class: 'form-row' },
+      select(names.map((n) => ({ value: n, label: `${n} (${missingCounts.get(n)} missing)` })), missingCol, (v) => { f.missingCol = v; render(); }, { 'aria-label': 'Column with missing values' }),
+      select(methods.map(([value, label]) => ({ value, label })), f.missingMethod, (v) => { f.missingMethod = v; render(); }, { 'aria-label': 'What to do' }),
+      f.missingMethod === 'value' && el('input', { type: 'text', value: f.fillValue ?? '', placeholder: 'value', 'aria-label': 'Fill value', oninput: (e) => { f.fillValue = e.target.value; } }),
+      el('button', {
+        class: 'btn primary small', type: 'button', disabled: !missingCounts.get(missingCol),
+        onclick: () => addStep(f.missingMethod === 'drop'
+          ? { op: 'dropMissing', column: missingCol }
+          : { op: 'fillMissing', column: missingCol, method: f.missingMethod, value: f.fillValue }),
+      }, 'Apply')),
+    withMissing.length > 1 && el('button', { class: 'btn ghost small', type: 'button', onclick: () => addStep({ op: 'dropMissing', column: null }) }, 'Remove every row that has any missing value'));
+
+  // Duplicates
+  const dupCard = actionCard('Duplicate rows', 'cleaning',
+    dupCount ? `${plural(dupCount, 'row')} ${dupCount === 1 ? 'is an exact copy' : 'are exact copies'} of an earlier row.` : 'No duplicate rows found.',
+    el('button', { class: 'btn primary small', type: 'button', disabled: !dupCount, onclick: () => addStep({ op: 'removeDuplicates' }) }, 'Remove duplicates'));
+
+  // Calculated column
+  const preview = el('div', { class: 'formula-preview' });
+  const formulaInput = el('input', {
+    type: 'text', class: 'formula-input', value: f.formula ?? '', placeholder: 'e.g. revenue / customers', spellcheck: 'false', 'aria-label': 'Formula',
+    oninput: (e) => { f.formula = e.target.value; drawPreview(); },
+  });
+  const drawPreview = () => {
+    clear(preview);
+    if (!f.formula?.trim()) {
+      preview.append(el('span', { class: 'muted' }, 'A preview of the first rows appears here as you type.'));
+      return;
+    }
+    try {
+      const rows = indices.slice(0, 5);
+      const results = evaluateFormula(f.formula, ds, rows);
+      preview.append(el('span', { class: 'muted' }, 'Preview: '), ...results.map((v, k) => el('span', { class: 'preview-value', title: `Row ${rows[k] + 1}` }, v == null ? '—' : typeof v === 'number' ? formatNumber(v) : typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v))));
+    } catch (err) {
+      preview.append(el('span', { class: 'formula-error' }, err.message));
+    }
+  };
+  drawPreview();
+  const insert = (text) => {
+    const start = formulaInput.selectionStart ?? formulaInput.value.length;
+    const end = formulaInput.selectionEnd ?? start;
+    formulaInput.value = formulaInput.value.slice(0, start) + text + formulaInput.value.slice(end);
+    formulaInput.focus();
+    formulaInput.setSelectionRange(start + text.length, start + text.length);
+    f.formula = formulaInput.value;
+    drawPreview();
+  };
+  const formulaCard = actionCard('New calculated column', 'formula', 'Combine columns with a formula. Click a column name to insert it.',
+    el('div', { class: 'form-row' },
+      el('input', { type: 'text', value: f.formulaName ?? '', placeholder: 'New column name', 'aria-label': 'New column name', oninput: (e) => { f.formulaName = e.target.value; } }),
+      el('span', { class: 'muted' }, '=')),
+    formulaInput,
+    preview,
+    el('div', { class: 'column-chips' }, c.map((col) => el('button', { class: 'col-chip', type: 'button', onclick: () => insert(/^[\p{L}_][\p{L}\p{N}_]*$/u.test(col.name) ? col.name : `[${col.name}]`) }, el('span', { class: `type-badge t-${col.type}` }, TYPE_ICONS[col.type]), col.name))),
+    el('details', { class: 'functions' },
+      el('summary', {}, 'Functions and examples'),
+      el('p', { class: 'muted small' }, 'Operators: + − * / ^ (power), comparisons = != < > <= >=, and / or / not, & joins text. Text goes in "quotes".'),
+      el('ul', {}, Object.entries(FUNCTIONS).map(([name, fn]) => el('li', {}, el('button', { class: 'fn-insert', type: 'button', onclick: () => insert(`${name}(`) }, `${name}(${fn.args})`), ' ', el('span', { class: 'muted' }, fn.help))))),
+    el('button', { class: 'btn primary small', type: 'button', onclick: () => addStep({ op: 'formula', name: f.formulaName, formula: f.formula }) }, 'Add column'));
+
+  // Rename / delete
+  const renameCol = pick('renameCol', names[0]);
+  const renameCard = actionCard('Rename or delete a column', null, null,
+    el('div', { class: 'form-row' },
+      select(names.map((n) => ({ value: n, label: n })), renameCol, (v) => { f.renameCol = v; f.renameTo = ''; render(); }, { 'aria-label': 'Column' }),
+      el('input', { type: 'text', value: f.renameTo ?? '', placeholder: 'New name', 'aria-label': 'New name', oninput: (e) => { f.renameTo = e.target.value; } }),
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => { addStep({ op: 'rename', column: renameCol, to: f.renameTo }); f.renameTo = ''; } }, 'Rename'),
+      el('button', { class: 'btn danger small', type: 'button', onclick: () => addStep({ op: 'delete', column: renameCol }) }, 'Delete column')));
+
+  // Tidy text
+  const textNames = c.filter((col) => col.type === 'category' || col.type === 'text').map((col) => col.name);
+  const textCol = textNames.length ? pick('textCol', textNames[0]) : null;
+  const distinct = textCol ? new Set(c[colIndex(textCol)].values.filter((v) => v != null)).size : 0;
+  const textCard = textNames.length > 0 && actionCard('Tidy text', null,
+    `Inconsistent spelling such as "NY", "ny" and " NY " splits one group into several. ${textCol} has ${plural(distinct, 'distinct value')}.`,
+    el('div', { class: 'form-row' },
+      select(textNames.map((n) => ({ value: n, label: n })), textCol, (v) => { f.textCol = v; render(); }, { 'aria-label': 'Text column' }),
+      select([['trim', 'Remove extra spaces'], ['lower', 'lowercase'], ['upper', 'UPPERCASE'], ['title', 'Title Case']].map(([value, label]) => ({ value, label })), f.textOp ?? 'trim', (v) => { f.textOp = v; }, { 'aria-label': 'Text change' }),
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => addStep({ op: 'text', column: textCol, transform: f.textOp ?? 'trim' }) }, 'Apply')));
+
+  // Keep filtered rows
+  const keepCard = actionCard('Keep only filtered rows', 'filter',
+    state.filters.length
+      ? `Make your current filters permanent: keep ${plural(indices.length, 'row')} and remove the other ${(ds.rowCount - indices.length).toLocaleString('en-US')}.`
+      : 'Add a filter above, then make it permanent here to remove the rows you don’t need.',
+    el('button', {
+      class: 'btn primary small', type: 'button', disabled: !state.filters.length,
+      onclick: () => addStep({ op: 'keepRows', filters: state.filters.map((x) => ({ op: x.op, value: x.value, column: cols()[x.column].name })) }),
+    }, 'Keep filtered rows'));
+
+  const history = el('aside', { class: 'card history' },
+    el('h3', {}, 'Steps'),
+    el('p', { class: 'muted small' }, `Original: ${plural(state.original.rowCount, 'row')} × ${plural(state.original.columns.length, 'column')}. Your file is never changed.`),
+    state.steps.length
+      ? el('ol', { class: 'step-list' }, state.steps.map((s) => el('li', {}, describeStep(s))))
+      : el('p', { class: 'muted' }, 'No changes yet. Each action you apply appears here.'),
+    el('p', { class: 'small' }, `Now: ${plural(ds.rowCount, 'row')} × ${plural(c.length, 'column')}`),
+    el('div', { class: 'history-actions' },
+      el('button', { class: 'btn small', type: 'button', disabled: !state.steps.length, title: 'Ctrl+Z', onclick: undo }, '↶ Undo last'),
+      el('button', { class: 'btn ghost small', type: 'button', disabled: !state.steps.length, onclick: () => { if (confirm('Remove all cleaning steps and go back to the original data?')) setSteps([]); } }, 'Start over'),
+      el('button', { class: 'btn small', type: 'button', onclick: () => download(`${ds.name}-clean.csv`, datasetToCSV(ds, [...Array(ds.rowCount).keys()])) }, '⇩ Export cleaned CSV')));
+
+  return el('div', { class: 'clean-view' },
+    el('div', { class: 'clean-actions' }, learnTip('cleaning'), dupCard, missingCard, formulaCard, textCard, renameCard, keepCard),
+    history);
+}
+
+function actionCard(title, term, description, ...body) {
+  return el('section', { class: 'card action-card' },
+    el('h3', {}, term ? termLink(term, title) : title),
+    description && el('p', { class: 'muted' }, description),
+    body);
+}
+
 // ---------- learn ----------
 
 function renderLearn() {
@@ -663,10 +936,17 @@ window.addEventListener('paste', (e) => {
   if (text && text.includes('\n')) loadText(text, 'pasted data.csv');
 });
 
+window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && state.dataset && state.steps.length && !e.target.closest?.('input, textarea, select')) {
+    e.preventDefault();
+    undo();
+  }
+});
+
 installTooltip(document.getElementById('tooltip'));
 
 // Expose for debugging and automated tests.
-window.lumora = { state, loadText, loadSample };
+window.lumora = { state, loadText, loadSample, addStep, undo };
 
 const params = new URLSearchParams(location.search);
 if (params.get('sample')) loadSample(params.get('sample'));

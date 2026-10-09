@@ -50,7 +50,8 @@ export function select(options, value, onChange, props = {}) {
 }
 
 export function download(fileName, text, type = 'text/csv') {
-  const url = URL.createObjectURL(new Blob([text], { type }));
+  const blob = text instanceof Blob ? text : new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
   const a = el('a', { href: url, download: fileName });
   document.body.append(a);
   a.click();

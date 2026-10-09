@@ -67,7 +67,7 @@ const MAX_POINTS = 5000;
  * Prepare chart data. Returns { type, ...data } or { error } when the columns don't fit the chart.
  * options: { type, x, y, agg }  (x / y are column indices; y may be null)
  */
-export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mean' }) {
+export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mean', color = null }) {
   let xCol = dataset.columns[x];
   let yCol = y == null ? null : dataset.columns[y];
   if (!xCol) return { error: 'Pick a column for the X axis.' };
@@ -84,15 +84,26 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
     if (!yCol || xCol.type !== 'number' || yCol.type !== 'number') return { error: 'A scatter plot needs two number columns (X and Y).' };
     const xv = col(xCol);
     const yv = col(yCol);
+    // Optional colour grouping by a category: top 7 groups get their own colour, the rest are "Other".
+    const colorCol = color == null ? null : dataset.columns[color];
+    let legend = null;
+    let groupOf = () => undefined;
+    if (isGroupable(colorCol)) {
+      const keys = col(colorCol).map((v) => (v == null ? '(missing)' : String(groupKey(colorCol, v))));
+      const top = frequencies(keys).slice(0, 7).map((f) => f.value);
+      const others = keys.some((k) => !top.includes(k));
+      legend = [...top, ...(others ? ['Other'] : [])].map((label) => ({ label }));
+      groupOf = (k) => (top.includes(keys[k]) ? top.indexOf(keys[k]) : top.length);
+    }
     let points = [];
-    for (let k = 0; k < xv.length; k++) if (isNum(xv[k]) && isNum(yv[k])) points.push({ x: xv[k], y: yv[k], row: indices[k] });
+    for (let k = 0; k < xv.length; k++) if (isNum(xv[k]) && isNum(yv[k])) points.push({ x: xv[k], y: yv[k], row: indices[k], g: groupOf(k) });
     if (!points.length) return { error: 'No rows have both values.' };
     const total = points.length;
     if (points.length > MAX_POINTS) {
       const step = points.length / MAX_POINTS;
       points = Array.from({ length: MAX_POINTS }, (_, k) => points[Math.floor(k * step)]);
     }
-    return { type, xLabel: xCol.name, yLabel: yCol.name, points, total, regression: linearRegression(xv, yv), r: pearson(xv, yv) };
+    return { type, xLabel: xCol.name, yLabel: yCol.name, points, total, regression: linearRegression(xv, yv), r: pearson(xv, yv), legend, colorLabel: legend ? colorCol.name : null };
   }
 
   if (type === 'line') {

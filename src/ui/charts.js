@@ -133,8 +133,21 @@ export function barChart(data) {
   ]);
 }
 
+function legendRow(legend, left) {
+  let x = left;
+  return legend.map((item, i) => {
+    const text = truncate(item.label, 16);
+    const g = [
+      svg('circle', { class: `legend-dot c${i}`, cx: x + 5, cy: 12, r: 5 }),
+      svg('text', { class: 'tick label', x: x + 14, y: 12, 'dominant-baseline': 'middle' }, text),
+    ];
+    x += 26 + text.length * 6.6;
+    return g;
+  });
+}
+
 export function scatterChart(data) {
-  const m = { t: 20, r: 24, b: 52, l: 68 };
+  const m = { t: data.legend ? 36 : 20, r: 24, b: 52, l: 68 };
   const [x0, x1] = extent(data.points.map((p) => p.x));
   const [y0, y1] = extent(data.points.map((p) => p.y));
   const xt = niceTicks(x0, x1, 7);
@@ -147,10 +160,14 @@ export function scatterChart(data) {
     yAxis(yt, y, m.l, W - m.r),
     xAxis(xt, x, m.t, H - m.b),
     data.points.map((p) =>
-      svg('circle', { class: 'dot', cx: x(p.x), cy: y(p.y), r, 'data-tip': `Row ${p.row + 1}: ${data.xLabel} ${formatNumber(p.x)}, ${data.yLabel} ${formatNumber(p.y)}` })
+      svg('circle', {
+        class: p.g == null ? 'dot' : `dot c${p.g}`, cx: x(p.x), cy: y(p.y), r,
+        'data-tip': `Row ${p.row + 1}: ${data.xLabel} ${formatNumber(p.x)}, ${data.yLabel} ${formatNumber(p.y)}${p.g == null ? '' : ` (${data.legend[p.g].label})`}`,
+      })
     ),
+    data.legend && legendRow(data.legend, m.l),
     reg && svg('line', {
-      class: 'trend',
+      class: data.legend ? 'trend neutral' : 'trend',
       x1: x(xt[0]), y1: y(reg.intercept + reg.slope * xt[0]),
       x2: x(xt[xt.length - 1]), y2: y(reg.intercept + reg.slope * xt[xt.length - 1]),
       'clip-path': 'url(#plot-clip)',

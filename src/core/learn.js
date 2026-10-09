@@ -86,6 +86,36 @@ export const GLOSSARY = {
     short: 'Split rows into groups and calculate a summary for each.',
     body: 'Also called a pivot table. For example, group sales by weekday and calculate the average revenue for each day. This is one of the most useful moves in data analysis: it turns thousands of rows into a small table that answers a question.',
   },
+  pvalue: {
+    term: 'p-value (is it real?)',
+    short: 'How surprising your result would be if there were really no effect.',
+    body: 'Data always has some random noise, so two groups will rarely have exactly the same average even when nothing real is going on. The p-value asks: "if there were truly no difference, how often would chance alone produce a gap at least this big?" A small p-value (below 0.05 is the usual cut-off) means chance is an unlikely explanation. It does not tell you how big or important the effect is. Look at the effect size for that. With huge datasets even tiny, unimportant differences become "significant".',
+  },
+  ttest: {
+    term: 't-test',
+    short: 'Checks whether two groups really have different averages.',
+    body: "The t-test compares the gap between two group averages with how much the values vary within each group. A large gap relative to the noise gives a small p-value. Lumora uses Welch's version, which does not assume the two groups have the same spread. The confidence interval gives a plausible range for the true difference, and Cohen's d measures its size: around 0.2 is small, 0.5 medium and 0.8 large.",
+  },
+  anova: {
+    term: 'ANOVA',
+    short: 'Checks whether three or more groups really have different averages.',
+    body: 'Analysis of variance (ANOVA) compares how much group averages differ from each other with how much values vary inside each group. A small p-value says at least one group differs, but not which one. η² (eta squared) is the share of all variation explained by the groups: about 0.01 is small, 0.06 medium and 0.14 large.',
+  },
+  chisquare: {
+    term: 'Chi-square test',
+    short: 'Checks whether two category columns are related.',
+    body: "The chi-square test compares the counts you actually see in each combination of categories (e.g. major × passed) with the counts you would expect if the columns were unrelated. Big differences give a small p-value. Cramér's V measures how strong the association is, from 0 (none) to 1 (perfect). The test is unreliable when many combinations have fewer than 5 expected rows.",
+  },
+  cleaning: {
+    term: 'Data cleaning',
+    short: 'Fixing problems in data before analysing it.',
+    body: 'Most real datasets need tidying: duplicate rows, missing values, inconsistent spelling ("NY" vs "ny "), columns with the wrong type. Every cleaning action in Lumora is recorded as a step, so you can see exactly what changed and undo it. Your original file is never modified. Be careful when filling missing values: filling with the average keeps the average the same but makes the data look less varied than it really is.',
+  },
+  formula: {
+    term: 'Calculated column',
+    short: 'A new column computed from other columns with a formula.',
+    body: 'Formulas let you create the measure you actually care about: revenue per customer, profit margin, age group, weekday from a date. Refer to columns by name (use [square brackets] if the name has spaces), combine them with + − × ÷, and use functions such as round(), if() and year(). Text goes in "quotes", and & joins pieces of text together.',
+  },
   filter: {
     term: 'Filters',
     short: 'Focus on the rows that matter for your question.',
@@ -139,5 +169,19 @@ export const LESSONS = [
     body: 'A line chart of iced drink sales by date shows the seasons. The moving average smooths out daily noise. Then add a filter for promotion = yes to see promo days only.',
     terms: ['line', 'filter'],
     try: { sample: 'coffee', tab: 'chart', chart: { type: 'line', x: 'date', y: 'iced_drinks' } },
+  },
+  {
+    id: 'significance',
+    title: '7. Is the difference real?',
+    body: 'Some majors score higher than others, but could that just be luck? Below the chart, Lumora runs the right statistical test and explains the result in plain English.',
+    terms: ['pvalue', 'anova', 'ttest'],
+    try: { sample: 'students', tab: 'chart', chart: { type: 'box', x: 'major', y: 'exam_score' } },
+  },
+  {
+    id: 'clean',
+    title: '8. Clean data and create new columns',
+    body: 'Fill the missing temperatures, then build a "revenue per customer" column with a formula. Every step is recorded, so you can undo anything.',
+    terms: ['cleaning', 'formula'],
+    try: { sample: 'coffee', tab: 'clean', clean: { missingCol: 'temperature_c', missingMethod: 'median', formulaName: 'revenue_per_customer', formula: 'round(revenue / customers, 2)' } },
   },
 ];
