@@ -1,10 +1,21 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '0.4.0',
+    date: '2026-10-10',
+    items: [
+      'Ask questions in plain English, like "which weekday has the most customers", and get an answer, a table and a chart.',
+      'Key drivers: see which columns are most related to the one you care about, ranked and explained.',
+      'Reports: pin charts, summaries and answers, add notes, then print or save as PDF.',
+      'Your work saves automatically. Pick up where you left off from the start screen, or save a project file to share.',
+      'Updating no longer closes your work: it reopens right after the update.',
+    ],
+  },
   {
     version: '0.3.0',
     date: '2026-10-10',

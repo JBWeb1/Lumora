@@ -116,6 +116,21 @@ export const GLOSSARY = {
     short: 'A new column computed from other columns with a formula.',
     body: 'Formulas let you create the measure you actually care about: revenue per customer, profit margin, age group, weekday from a date. Refer to columns by name (use [square brackets] if the name has spaces), combine them with + − × ÷, and use functions such as round(), if() and year(). Text goes in "quotes", and & joins pieces of text together.',
   },
+  ask: {
+    term: 'Asking questions',
+    short: 'Type a question in plain English and Lumora works out the analysis.',
+    body: 'Lumora recognises column names and common phrases: "average X by Y", "which Y has the highest X", "how many rows where X is Z", "X over time", "relationship between X and Y", "what drives X". It always shows how it understood your question. Check that line, because a different reading can give a different answer. Answers can be opened in the Chart or Summarize tab to refine them.',
+  },
+  drivers: {
+    term: 'Key drivers',
+    short: 'Which columns are most related to the one you care about.',
+    body: 'For each other column, Lumora measures how much of the variation in your chosen column it explains (0–100%), using correlation for two number columns, group comparisons for categories, and Cramér\'s V for two category columns. That puts very different columns on one scale so you can rank them. "Explains 30%" means knowing that column removes about 30% of the uncertainty. This is a starting point, not proof of cause and effect.',
+  },
+  report: {
+    term: 'Reports',
+    short: 'Collect your findings with notes, then print or save as PDF.',
+    body: 'Pin charts, summaries, answers and key drivers to the Report tab and add a note to each explaining what it shows. Items stay connected to your data, so they update if you clean it. Use "Print / Save as PDF" to share a clean document: the buttons and menus are hidden when printing.',
+  },
   filter: {
     term: 'Filters',
     short: 'Focus on the rows that matter for your question.',
@@ -183,5 +198,19 @@ export const LESSONS = [
     body: 'Fill the missing temperatures, then build a "revenue per customer" column with a formula. Every step is recorded, so you can undo anything.',
     terms: ['cleaning', 'formula'],
     try: { sample: 'coffee', tab: 'clean', clean: { missingCol: 'temperature_c', missingMethod: 'median', formulaName: 'revenue_per_customer', formula: 'round(revenue / customers, 2)' } },
+  },
+  {
+    id: 'ask',
+    title: '9. Ask questions in plain English',
+    body: 'Type a question like you would ask a colleague. Lumora shows how it understood it, answers with a sentence, a table and a chart, and lets you pin the answer to a report.',
+    terms: ['ask', 'report'],
+    try: { sample: 'coffee', tab: 'overview', ask: 'which weekday has the most customers' },
+  },
+  {
+    id: 'drivers',
+    title: '10. What drives the result?',
+    body: 'Which habits are most related to exam scores? Key drivers ranks every column and explains each relationship. Notice "passed" tops the list: it is calculated from the score, a reminder that related does not mean caused.',
+    terms: ['drivers', 'correlation'],
+    try: { sample: 'students', tab: 'drivers', drivers: 'exam_score' },
   },
 ];

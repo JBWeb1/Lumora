@@ -5,7 +5,7 @@ import { testColumns } from './core/significance.js';
 import { readXlsx } from './core/xlsx.js';
 import { describe, frequencies, histogram, numbers, correlationMatrix, correlationStrength } from './core/stats.js';
 import {
-  AGGREGATIONS, FILTER_OPS, NO_VALUE_OPS, applyFilters, datasetToCSV, formatDate, formatNumber, formatValue,
+  AGGREGATIONS, FILTER_OPS, NO_VALUE_OPS, aggregate, applyFilters, datasetToCSV, formatDate, formatNumber, formatValue,
   groupBy, searchRows, sortIndices, toCSV,
 } from './core/transform.js';
 import { generateInsights } from './core/insights.js';
@@ -17,6 +17,10 @@ import { renderChart, heatmap, sparkHistogram } from './ui/charts.js';
 import { exportChart } from './ui/export.js';
 import { initUpdates, watchInstallPrompt, compareVersions } from './ui/updates.js';
 import { VERSION, CHANGELOG } from './version.js';
+import { exampleQuestions, parseQuestion } from './core/ask.js';
+import { canBeTarget, keyDrivers, strengthWord } from './core/drivers.js';
+import { deserializeProject, isProject, newProjectId, projectSummary, serializeProject } from './core/project.js';
+import { deleteProject, listProjects, loadProject, saveProject } from './ui/storage.js';
 
 // ---------- state ----------
 
@@ -50,6 +54,10 @@ const state = {
   clean: {},
   summarize: { by: null, dateUnit: 'month', aggs: [{ fn: 'count', column: null }] },
   addingFilter: null,
+  projectId: null, // auto-saved under this id
+  report: [], // pinned charts, summaries, answers and notes (column references by name)
+  ask: { question: '', parsed: null },
+  drivers: { target: null },
 };
 
 let indices = [];
@@ -59,7 +67,9 @@ const TABS = [
   { id: 'table', label: 'Table', icon: '▦' },
   { id: 'chart', label: 'Chart', icon: '∿' },
   { id: 'summarize', label: 'Summarize', icon: 'Σ' },
+  { id: 'drivers', label: 'Drivers', icon: '◎' },
   { id: 'clean', label: 'Clean', icon: '✎' },
+  { id: 'report', label: 'Report', icon: '❏', count: () => state.report.length },
   { id: 'learn', label: 'Learn', icon: '?' },
 ];
 
@@ -121,6 +131,7 @@ function recompute() {
 function update() {
   recompute();
   render();
+  scheduleSave();
 }
 
 // ---------- loading ----------
@@ -147,6 +158,11 @@ function loadDataset(ds) {
   state.dataset = ds;
   state.clean = {};
   state.addingFilter = null;
+  state.projectId = newProjectId();
+  state.report = [];
+  state.ask = { question: '', parsed: null };
+  state.drivers = { target: null };
+  store.set('openProject', state.projectId);
   chooseDefaults();
   state.tab = 'overview';
   update();
@@ -154,6 +170,18 @@ function loadDataset(ds) {
 
 function loadText(text, fileName) {
   try {
+    if (/^\s*\{/.test(text)) {
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        /* not JSON: fall through to the normal loader for a clearer message */
+      }
+      if (isProject(json)) {
+        openProject(json, { imported: true });
+        return true;
+      }
+    }
     loadDataset(datasetFromText(text, fileName));
     return true;
   } catch (err) {
@@ -219,7 +247,11 @@ function runLesson(lesson) {
     };
   }
   if (t.clean) state.clean = { ...t.clean };
+  if (t.drivers) state.drivers = { target: colIndex(t.drivers) };
   state.tab = t.tab;
+  if (t.ask) {
+    state.ask = { question: t.ask, parsed: parseQuestion(t.ask, state.dataset) };
+  }
   update();
   toast(lesson.title.replace(/^\d+\.\s*/, 'Lesson: '), 'info');
 }
@@ -238,6 +270,7 @@ function renderHome() {
       el('h1', {}, 'Understand your data ', el('span', { class: 'glow' }, 'in seconds')),
       el('p', { class: 'lead' }, 'Lumora reads your spreadsheet, explains what is inside in plain English, and helps you build the right chart, even if you have never studied statistics.'),
       drop),
+    recentWorkSection(),
     el('section', {},
       el('h2', {}, 'Or start with practice data'),
       el('div', { class: 'cards' }, SAMPLES.map((s) =>
@@ -272,10 +305,10 @@ function renderWorkspace() {
       class: `tab${state.tab === t.id ? ' active' : ''}`, role: 'tab', type: 'button',
       'aria-selected': String(state.tab === t.id),
       onclick: () => { state.tab = t.id; render(); },
-    }, el('span', { class: 'tab-icon', 'aria-hidden': 'true' }, t.icon), t.label)));
+    }, el('span', { class: 'tab-icon', 'aria-hidden': 'true' }, t.icon), t.label, t.count?.() ? el('span', { class: 'tab-count' }, t.count()) : null)));
 
-  const views = { overview: renderOverview, table: renderTable, chart: renderChartTab, summarize: renderSummarize, clean: renderClean, learn: renderLearn };
-  return el('div', { class: 'workspace' }, nav, state.tab !== 'learn' && renderFilterBar(), el('div', { class: 'view' }, views[state.tab]()));
+  const views = { overview: renderOverview, table: renderTable, chart: renderChartTab, summarize: renderSummarize, drivers: renderDrivers, clean: renderClean, report: renderReport, learn: renderLearn };
+  return el('div', { class: 'workspace' }, nav, !['learn', 'report'].includes(state.tab) && renderFilterBar(), el('div', { class: 'view' }, views[state.tab]()));
 }
 
 // ---------- filters ----------
@@ -348,6 +381,7 @@ function renderOverview() {
   const numeric = c.filter((col) => col.type === 'number');
 
   return el('div', { class: 'overview' },
+    renderAsk(),
     el('div', { class: 'kpis' },
       kpi('Rows', indices.length.toLocaleString('en-US')),
       kpi('Columns', c.length),
@@ -568,7 +602,8 @@ function renderChartTab() {
         el('div', { class: 'chart-export' },
           el('span', { class: 'muted small' }, 'Download chart:'),
           el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'png') }, '⇩ PNG'),
-          el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'svg') }, '⇩ SVG')),
+          el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'svg') }, '⇩ SVG'),
+          el('button', { class: 'btn small primary', type: 'button', onclick: () => pin({ kind: 'chart', title: title || 'Chart', chart: chartRefs(state.chart, type) }) }, '📌 Add to report')),
       ]),
     significanceCard(ch),
     type && learnTip(CHART_TYPES[type].term));
@@ -665,7 +700,9 @@ function renderSummarize() {
         el('div', { class: 'chart-wrap' }, renderChart({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[firstValueCol], bars: bars.slice(0, 30) })))),
     el('div', { class: 'toolbar' },
       el('span', { class: 'muted' }, plural(result.rows.length, 'group')),
-      el('button', { class: 'btn small', onclick: () => download(`${state.dataset.name}-summary.csv`, toCSV(result.headers, result.rows)) }, '⇩ Export summary CSV')));
+      el('div', { class: 'toolbar-actions' },
+        el('button', { class: 'btn small', onclick: () => download(`${state.dataset.name}-summary.csv`, toCSV(result.headers, result.rows)) }, '⇩ Export summary CSV'),
+        el('button', { class: 'btn small primary', type: 'button', onclick: () => pin({ kind: 'summary', title: result.headers.slice(1).join(', ') + ` by ${result.headers[0]}`, summarize: summarizeRefs(state.summarize) }) }, '📌 Add to report'))));
 }
 
 // ---------- cleaning steps ----------
@@ -679,6 +716,7 @@ function snapshotRefs() {
     aggs: state.summarize.aggs.map((a) => ({ ...a, column: name(a.column) })),
     filters: state.filters.map((f) => ({ ...f, column: name(f.column) })),
     sort: name(state.table.sort),
+    target: name(state.drivers.target),
   };
 }
 
@@ -696,6 +734,7 @@ function restoreRefs(refs, renames) {
   if (!state.summarize.aggs.length) state.summarize.aggs = [{ fn: 'count', column: null }];
   state.filters = refs.filters.map((f) => ({ ...f, column: idx(f.column) })).filter((f) => f.column != null);
   state.table.sort = idx(refs.sort);
+  state.drivers.target = idx(refs.target);
 }
 
 function setSteps(steps, renames = {}) {
@@ -710,20 +749,50 @@ function setSteps(steps, renames = {}) {
   state.steps = steps;
   state.dataset = ds;
   state.addingFilter = null;
+  state.ask = { question: state.ask.question, parsed: null };
   restoreRefs(refs, renames);
   update();
   return true;
 }
 
+/** Report items refer to columns by name; keep them pointing at a renamed column. */
+function renameInReport(from, to) {
+  const swap = (v) => (v === from ? to : v);
+  const fixFilters = (fs) => fs?.forEach((f) => { f.column = swap(f.column); });
+  for (const item of state.report) {
+    fixFilters(item.filters);
+    if (item.chart) {
+      for (const k of ['x', 'y', 'color']) item.chart[k] = swap(item.chart[k]);
+      fixFilters(item.chart.filters);
+    }
+    if (item.summarize) {
+      item.summarize.by = swap(item.summarize.by);
+      item.summarize.aggs.forEach((a) => { a.column = swap(a.column); });
+      fixFilters(item.summarize.filters);
+    }
+    if (item.value) item.value.column = swap(item.value.column);
+    if (item.drivers) {
+      item.drivers.target = swap(item.drivers.target);
+      fixFilters(item.drivers.filters);
+    }
+  }
+}
+
 function addStep(step) {
   if (step.op === 'keepRows') state.filters = [];
-  if (setSteps([...state.steps, step], step.op === 'rename' ? { [step.column]: step.to } : {})) toast(`✓ ${describeStep(step)}`, 'info');
+  const renames = step.op === 'rename' ? { [step.column]: step.to } : {};
+  // Rename report references first so the re-render already shows them; revert if the step fails.
+  if (step.op === 'rename') renameInReport(step.column, step.to);
+  if (setSteps([...state.steps, step], renames)) toast(`✓ ${describeStep(step)}`, 'info');
+  else if (step.op === 'rename') renameInReport(step.to, step.column);
 }
 
 function undo() {
   const last = state.steps.at(-1);
   if (!last) return;
+  if (last.op === 'rename') renameInReport(last.to, last.column);
   if (setSteps(state.steps.slice(0, -1), last.op === 'rename' ? { [last.to]: last.column } : {})) toast(`Undid: ${describeStep(last)}`, 'info');
+  else if (last.op === 'rename') renameInReport(last.column, last.to);
 }
 
 // ---------- clean ----------
@@ -865,6 +934,376 @@ function actionCard(title, term, description, ...body) {
     body);
 }
 
+// ---------- references by name (survive cleaning steps, saving and reloading) ----------
+
+const nameOf = (i) => (i == null || i < 0 ? null : cols()[i]?.name ?? null);
+const idxOf = (name) => {
+  if (name == null) return null;
+  const i = colIndex(name);
+  return i < 0 ? null : i;
+};
+const filterRefs = (filters) => filters.map((f) => ({ ...f, column: nameOf(f.column) }));
+/** Resolve named filters; reports columns that no longer exist instead of silently dropping them. */
+function resolveFilters(refs = []) {
+  const missing = refs.filter((f) => idxOf(f.column) == null).map((f) => f.column);
+  return { filters: refs.filter((f) => idxOf(f.column) != null).map((f) => ({ ...f, column: idxOf(f.column) })), missing };
+}
+const chartRefs = (ch, type) => ({ type: type ?? ch.type, x: nameOf(ch.x), y: nameOf(ch.y), agg: ch.agg, color: nameOf(ch.color), filters: filterRefs(state.filters) });
+const summarizeRefs = (s) => ({ by: nameOf(s.by), dateUnit: s.dateUnit, aggs: s.aggs.map((a) => ({ fn: a.fn, column: nameOf(a.column) })), sort: s.sort ?? null, limit: s.limit ?? null, filters: filterRefs(state.filters) });
+
+function viewByNames() {
+  return {
+    tab: state.tab,
+    filters: filterRefs(state.filters),
+    chart: chartRefs(state.chart),
+    summarize: summarizeRefs(state.summarize),
+    driversTarget: nameOf(state.drivers.target),
+    question: state.ask.question,
+  };
+}
+
+function restoreView(view = {}) {
+  if (view.filters) state.filters = resolveFilters(view.filters).filters;
+  if (view.chart) state.chart = { type: view.chart.type ?? 'auto', x: idxOf(view.chart.x) ?? 0, y: idxOf(view.chart.y), agg: view.chart.agg ?? 'mean', color: idxOf(view.chart.color) };
+  if (view.summarize?.by) {
+    state.summarize = {
+      by: idxOf(view.summarize.by) ?? 0,
+      dateUnit: view.summarize.dateUnit ?? 'month',
+      aggs: (view.summarize.aggs ?? []).map((a) => ({ fn: a.fn, column: idxOf(a.column) })).filter((a) => a.fn === 'count' || a.column != null),
+    };
+    if (!state.summarize.aggs.length) state.summarize.aggs = [{ fn: 'count', column: null }];
+  }
+  state.drivers = { target: idxOf(view.driversTarget) };
+  state.ask = { question: view.question ?? '', parsed: null };
+  if (TABS.some((t) => t.id === view.tab)) state.tab = view.tab;
+}
+
+// ---------- saving ----------
+
+let saveTimer = null;
+
+function currentProject() {
+  return serializeProject({ id: state.projectId, original: state.original, steps: state.steps, view: viewByNames(), report: state.report, appVersion: VERSION });
+}
+
+function scheduleSave() {
+  if (!state.dataset || !state.projectId) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 800);
+}
+
+async function saveNow() {
+  clearTimeout(saveTimer);
+  if (!state.dataset || !state.projectId) return;
+  try {
+    await saveProject(currentProject());
+  } catch {
+    /* storage full or unavailable: the app keeps working; "Save project" still downloads a file */
+  }
+}
+
+function openProject(json, { imported = false } = {}) {
+  const p = deserializeProject(json);
+  state.original = p.original;
+  state.steps = p.steps;
+  state.dataset = p.dataset;
+  state.projectId = imported ? newProjectId() : p.id ?? newProjectId();
+  state.report = p.report;
+  state.clean = {};
+  state.addingFilter = null;
+  chooseDefaults();
+  state.tab = 'overview';
+  restoreView(p.view);
+  store.set('openProject', state.projectId);
+  update();
+  if (p.skippedSteps) toast(`${plural(p.skippedSteps, 'cleaning step')} no longer applied and ${p.skippedSteps === 1 ? 'was' : 'were'} skipped.`);
+  else if (imported) toast(`Opened project "${state.original.name}".`, 'info');
+}
+
+function saveProjectFile() {
+  const name = state.original.name.replace(/[^\w\- ]+/g, '').trim() || 'project';
+  download(`${name}.lumora`, JSON.stringify(currentProject()), 'application/json');
+  toast('Project file downloaded. Open it in Lumora any time to continue.', 'info');
+}
+
+function timeAgo(iso) {
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (!Number.isFinite(s)) return '';
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return formatDate(Date.parse(iso));
+}
+
+/** "Recent work" on the start screen; filled in once storage answers. */
+function recentWorkSection() {
+  const section = el('section', { class: 'recent', hidden: true });
+  listProjects().then((projects) => {
+    if (!projects.length) return;
+    section.hidden = false;
+    section.append(
+      el('h2', {}, 'Continue where you left off'),
+      el('div', { class: 'recent-list' }, projects.slice(0, 6).map((json) => {
+        const p = projectSummary(json);
+        const card = el('div', { class: 'card recent-item' },
+          el('button', { class: 'recent-open', type: 'button', onclick: () => openProject(json) },
+            el('strong', {}, p.name),
+            el('span', { class: 'muted small' }, [plural(p.rowCount, 'row'), p.steps && plural(p.steps, 'step'), p.reportItems && plural(p.reportItems, 'report item'), timeAgo(p.savedAt)].filter(Boolean).join(' · '))),
+          el('button', {
+            class: 'icon-btn', type: 'button', 'aria-label': `Forget ${p.name}`, title: 'Remove from this list',
+            onclick: async () => {
+              await deleteProject(p.id).catch(() => {});
+              card.remove();
+              if (!section.querySelector('.recent-item')) section.hidden = true;
+            },
+          }, '✕'));
+        return card;
+      })));
+  });
+  return section;
+}
+
+// ---------- ask ----------
+
+function answerQuestion(question) {
+  state.ask = { question, parsed: parseQuestion(question, state.dataset) };
+  render();
+  scheduleSave();
+}
+
+function renderAsk() {
+  const a = state.ask;
+  const input = el('input', { type: 'search', class: 'ask-input', value: a.question, placeholder: 'Ask a question, e.g. "which weekday has the most customers"', 'aria-label': 'Ask a question about your data', autocomplete: 'off' });
+  const examples = exampleQuestions(state.dataset).slice(0, 4);
+  return el('section', { class: 'card ask' },
+    el('form', { class: 'ask-form', onsubmit: (e) => { e.preventDefault(); answerQuestion(input.value); } },
+      el('span', { class: 'ask-icon', 'aria-hidden': 'true' }, '✦'),
+      input,
+      el('button', { class: 'btn primary', type: 'submit' }, 'Ask')),
+    a.parsed ? renderAnswer(a.parsed) : el('div', { class: 'ask-examples' },
+      el('span', { class: 'muted small' }, 'Try:'),
+      examples.map((q) => el('button', { class: 'example-chip', type: 'button', onclick: () => answerQuestion(q) }, q)),
+      el('span', { class: 'muted small kbd-hint' }, 'Press / to ask from anywhere')));
+}
+
+/** Compute a summary spec ({ by, dateUnit, aggs, sort, limit }) on some rows. */
+function runSummary(spec, rows) {
+  const result = groupBy(state.dataset, rows, spec);
+  if (spec.sort && result.headers.length > 1) {
+    const dir = spec.sort === 'asc' ? 1 : -1;
+    result.rows.sort((r1, r2) => {
+      const a = r1[1];
+      const b = r2[1];
+      // Missing values last regardless of direction
+      if (a == null || b == null) return (a == null) - (b == null);
+      return (a - b) * dir;
+    });
+  }
+  return result;
+}
+
+const AGG_WORD = { mean: 'average', sum: 'total', median: 'median', min: 'lowest', max: 'highest', count: 'number of rows' };
+
+function renderAnswer(parsed) {
+  if (parsed.error) {
+    return el('div', { class: 'answer error' },
+      el('p', {}, parsed.error, ' Try one of these:'),
+      el('div', { class: 'ask-examples' }, parsed.suggestions.map((q) => el('button', { class: 'example-chip', type: 'button', onclick: () => answerQuestion(q) }, q))));
+  }
+  const c = cols();
+  const rows = applyFilters(state.dataset, [...state.filters, ...parsed.filters]);
+  const r = parsed.result;
+  const understood = el('p', { class: 'understood' }, el('span', { class: 'muted' }, 'Understood as: '), parsed.understood,
+    state.filters.length ? el('span', { class: 'muted' }, ` (plus your ${plural(state.filters.length, 'active filter')})`) : '');
+  const adoptFilters = () => {
+    for (const f of parsed.filters) if (!state.filters.some((g) => g.column === f.column && g.op === f.op && String(g.value) === String(f.value))) state.filters.push({ ...f });
+  };
+  const actions = [];
+  let body;
+
+  if (!rows.length) {
+    body = el('p', { class: 'answer-headline' }, 'No rows match those conditions.');
+  } else if (r.type === 'value') {
+    const v = r.fn === 'count' ? rows.length : aggregate(rows.map((i) => c[r.column].values[i]), r.fn);
+    body = el('p', { class: 'answer-headline' }, r.fn === 'count'
+      ? [el('strong', {}, rows.length.toLocaleString('en-US')), ` ${rows.length === 1 ? 'row matches' : 'rows match'}`, rows.length !== state.dataset.rowCount ? ` (out of ${state.dataset.rowCount.toLocaleString('en-US')}).` : '.']
+      : [`The ${AGG_WORD[r.fn]} ${c[r.column].name} is `, el('strong', {}, formatNumber(v)), ` (from ${plural(rows.length, 'row')}).`]);
+    actions.push(['📌 Add to report', () => pin({ kind: 'value', title: parsed.understood, value: { fn: r.fn, column: nameOf(r.column) }, filters: filterRefs([...state.filters, ...parsed.filters]) })]);
+  } else if (r.type === 'summary') {
+    const spec = { by: r.by, dateUnit: r.dateUnit ?? 'month', aggs: [{ fn: r.fn, column: r.column }], sort: r.sort, limit: r.limit };
+    const result = runSummary(spec, rows);
+    const top = result.rows[0];
+    const valueName = r.fn === 'count' ? 'number of rows' : `${AGG_WORD[r.fn]} ${c[r.column].name}`;
+    const shown = r.limit ? result.rows.slice(0, Math.max(r.limit, 5)) : result.rows.slice(0, 12);
+    body = [
+      r.sort && top && el('p', { class: 'answer-headline' }, el('strong', {}, String(top[0])), ` has the ${r.sort === 'desc' ? 'highest' : 'lowest'} ${valueName}: `, el('strong', {}, formatNumber(top[1])), '.'),
+      el('div', { class: 'answer-grid' },
+        el('div', { class: 'scroll-x' }, el('table', { class: 'data-table compact' },
+          el('thead', {}, el('tr', {}, result.headers.map((h, j) => el('th', { class: j ? 'num' : '' }, h)))),
+          el('tbody', {}, shown.map((row, k) => el('tr', { class: r.limit && k < r.limit ? 'highlight' : '' }, row.map((v, j) => el('td', { class: j ? 'num' : '' }, j ? formatNumber(v) : String(v)))))))),
+        el('div', { class: 'chart-wrap' }, renderChart({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[1], bars: result.rows.slice(0, 15).map((row) => ({ label: String(row[0]), value: row[1] })).filter((b) => Number.isFinite(b.value)) }))),
+      result.rows.length > shown.length && el('p', { class: 'muted small' }, `Showing ${shown.length} of ${result.rows.length} groups.`),
+    ];
+    actions.push(['Open in Summarize', () => { adoptFilters(); state.summarize = { by: r.by, dateUnit: r.dateUnit ?? 'month', aggs: [{ fn: r.fn, column: r.column }] }; state.tab = 'summarize'; update(); }]);
+    actions.push(['📌 Add to report', () => pin({ kind: 'summary', title: parsed.understood, summarize: { by: nameOf(r.by), dateUnit: r.dateUnit ?? 'month', aggs: [{ fn: r.fn, column: nameOf(r.column) }], sort: r.sort, limit: r.limit, filters: filterRefs([...state.filters, ...parsed.filters]) } })]);
+  } else if (r.type === 'chart') {
+    const data = buildChartData(state.dataset, rows, { ...r.chart, agg: 'mean' });
+    body = data.error ? el('p', {}, data.error) : [el('div', { class: 'chart-wrap' }, renderChart(data)), chartNotes(data)];
+    actions.push(['Open in Chart builder', () => { adoptFilters(); state.chart = { type: r.chart.type, x: r.chart.x, y: r.chart.y, agg: 'mean', color: null }; state.tab = 'chart'; update(); }]);
+    actions.push(['📌 Add to report', () => pin({ kind: 'chart', title: parsed.understood, chart: { type: r.chart.type, x: nameOf(r.chart.x), y: nameOf(r.chart.y), agg: 'mean', color: null, filters: filterRefs([...state.filters, ...parsed.filters]) } })]);
+  } else if (r.type === 'drivers') {
+    const list = keyDrivers(state.dataset, rows, r.target).slice(0, 3);
+    body = list.length
+      ? el('ol', { class: 'answer-list' }, list.map((d) => el('li', {}, el('strong', {}, d.column), ` (${strengthWord(d.strength)}): `, d.sentence)))
+      : el('p', {}, 'No other columns could be compared with this one.');
+    actions.push(['See all drivers', () => { adoptFilters(); state.drivers = { target: r.target }; state.tab = 'drivers'; update(); }]);
+  }
+
+  return el('div', { class: 'answer' },
+    understood,
+    body,
+    el('div', { class: 'answer-actions' },
+      actions.map(([label, fn]) => el('button', { class: 'btn small', type: 'button', onclick: fn }, label)),
+      el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.ask = { question: '', parsed: null }; render(); } }, 'Clear')),
+    state.learn && el('p', { class: 'muted small' }, 'Lumora matches your words to column names and common phrases ("average", "by", "which … highest", "over time"). Check the "Understood as" line to make sure it read your question correctly.'));
+}
+
+// ---------- drivers ----------
+
+function renderDrivers() {
+  const c = cols();
+  const targets = c.map((col, i) => ({ col, i })).filter(({ col }) => canBeTarget(col));
+  if (!targets.length) return el('div', { class: 'card empty' }, 'Key drivers needs a number column, or a category with up to 10 values, to explain.');
+  if (state.drivers.target == null || !canBeTarget(c[state.drivers.target])) {
+    const nums = targets.filter(({ col }) => col.type === 'number');
+    state.drivers.target = (nums[nums.length - 1] ?? targets[0]).i;
+  }
+  const t = state.drivers.target;
+  const list = keyDrivers(state.dataset, indices, t);
+  const max = Math.max(0.0001, ...list.map((d) => d.strength));
+
+  return el('div', { class: 'drivers-view' },
+    el('div', { class: 'card drivers-controls' },
+      el('label', { class: 'drivers-question' },
+        el('span', {}, 'What is most related to'),
+        select(targets.map(({ col, i }) => ({ value: i, label: col.name })), t, (v) => { state.drivers.target = +v; update(); }, { 'aria-label': 'Column to explain' }),
+        el('span', {}, '?')),
+      el('button', { class: 'btn small primary', type: 'button', onclick: () => pin({ kind: 'drivers', title: `What is related to ${c[t].name}`, drivers: { target: c[t].name, filters: filterRefs(state.filters) } }) }, '📌 Add to report')),
+    learnTip('drivers'),
+    list.length ? el('ol', { class: 'driver-list' }, list.map((d) => el('li', { class: 'card driver' },
+      el('div', { class: 'driver-head' },
+        el('strong', { class: 'driver-name' }, d.column),
+        el('span', { class: 'driver-bar', 'aria-hidden': 'true' }, el('span', { style: { width: `${Math.max(2, (d.strength / max) * 100)}%` } })),
+        el('span', { class: `driver-strength s-${strengthWord(d.strength).replace(' ', '-')}` }, `${strengthWord(d.strength)} · ${Math.round(d.strength * 100)}%`)),
+      el('p', {}, d.sentence),
+      el('div', { class: 'driver-foot' },
+        d.p >= 0.05 && el('span', { class: 'pill warn', title: 'p ≥ 0.05' }, 'could be chance'),
+        el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.chart = { type: 'auto', x: d.index, y: t, agg: 'mean', color: null }; state.tab = 'chart'; render(); } }, 'Show chart →')))))
+      : el('div', { class: 'card empty' }, 'No other columns could be compared with this one.'),
+    el('p', { class: 'muted small' }, '⚠ "Related" does not mean "causes". Two columns can move together because a third thing drives both, or because one is calculated from the other.'));
+}
+
+// ---------- report ----------
+
+function pin(item) {
+  state.report.push({ id: newProjectId().replace('p-', 'r-'), note: '', filters: filterRefs(state.filters), ...item });
+  toast(`Added to report (${plural(state.report.length, 'item')}).`, 'info');
+  render();
+  scheduleSave();
+}
+
+function renderReportItem(item) {
+  const missingCols = (names) => names.filter((n) => n != null && idxOf(n) == null);
+  const { filters, missing: missingFilterCols } = resolveFilters(item.filters ?? item.chart?.filters ?? item.summarize?.filters ?? item.drivers?.filters);
+  const rows = applyFilters(state.dataset, filters);
+  const c = cols();
+  let missing = [...missingFilterCols];
+  let content = null;
+
+  if (item.kind === 'chart') {
+    const ch = item.chart;
+    missing = missing.concat(missingCols([ch.x, ch.y, ch.color]));
+    if (!missing.length) {
+      const x = idxOf(ch.x);
+      const y = idxOf(ch.y);
+      const type = ch.type === 'auto' ? suggestChart(c[x], y == null ? null : c[y]).type : ch.type;
+      const data = buildChartData(state.dataset, rows, { type, x, y, agg: ch.agg, color: idxOf(ch.color) });
+      content = data.error ? el('p', { class: 'muted' }, data.error) : [el('div', { class: 'chart-wrap' }, renderChart(data)), chartNotes(data)];
+    }
+  } else if (item.kind === 'summary') {
+    const s = item.summarize;
+    missing = missing.concat(missingCols([s.by, ...s.aggs.map((a) => a.column)]));
+    if (!missing.length) {
+      const result = runSummary({ by: idxOf(s.by), dateUnit: s.dateUnit, aggs: s.aggs.map((a) => ({ fn: a.fn, column: idxOf(a.column) })), sort: s.sort }, rows);
+      const shown = result.rows.slice(0, s.limit ? Math.max(s.limit, 5) : 25);
+      content = el('div', { class: 'answer-grid' },
+        el('div', { class: 'scroll-x' }, el('table', { class: 'data-table compact' },
+          el('thead', {}, el('tr', {}, result.headers.map((h, j) => el('th', { class: j ? 'num' : '' }, h)))),
+          el('tbody', {}, shown.map((row) => el('tr', {}, row.map((v, j) => el('td', { class: j ? 'num' : '' }, j ? formatNumber(v) : String(v)))))))),
+        result.headers.length > 1 && el('div', { class: 'chart-wrap' }, renderChart({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[1], bars: result.rows.slice(0, 15).map((row) => ({ label: String(row[0]), value: row[1] })).filter((b) => Number.isFinite(b.value)) })));
+    }
+  } else if (item.kind === 'value') {
+    missing = missing.concat(missingCols([item.value.column]));
+    if (!missing.length) {
+      const v = item.value.fn === 'count' ? rows.length : aggregate(rows.map((i) => c[idxOf(item.value.column)].values[i]), item.value.fn);
+      content = el('p', { class: 'report-value' }, formatNumber(v), el('span', { class: 'muted small' }, ` from ${plural(rows.length, 'row')}`));
+    }
+  } else if (item.kind === 'drivers') {
+    missing = missing.concat(missingCols([item.drivers.target]));
+    if (!missing.length) {
+      const list = keyDrivers(state.dataset, rows, idxOf(item.drivers.target)).slice(0, 5);
+      content = el('ol', { class: 'answer-list' }, list.map((d) => el('li', {}, el('strong', {}, d.column), ` (${strengthWord(d.strength)}): `, d.sentence)));
+    }
+  }
+
+  const autosize = (ta) => {
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight + 2}px`;
+  };
+  const note = el('textarea', {
+    class: 'report-note', rows: item.kind === 'text' ? 4 : 2, placeholder: item.kind === 'text' ? 'Write your text here…' : 'Add a note: what does this show? (optional)',
+    'aria-label': 'Note', oninput: (e) => { item.note = e.target.value; autosize(e.target); scheduleSave(); },
+  });
+  note.value = item.note ?? '';
+  requestAnimationFrame(() => autosize(note));
+  const pos = state.report.indexOf(item);
+  const move = (d) => {
+    state.report.splice(pos, 1);
+    state.report.splice(pos + d, 0, item);
+    render();
+    scheduleSave();
+  };
+  return el('article', { class: `card report-item kind-${item.kind}` },
+    el('div', { class: 'report-item-head' },
+      el('input', { class: 'report-title', type: 'text', value: item.title ?? '', 'aria-label': 'Title', placeholder: 'Title', oninput: (e) => { item.title = e.target.value; scheduleSave(); } }),
+      el('div', { class: 'report-item-actions' },
+        el('button', { class: 'icon-btn', type: 'button', title: 'Move up', disabled: pos === 0, onclick: () => move(-1) }, '↑'),
+        el('button', { class: 'icon-btn', type: 'button', title: 'Move down', disabled: pos === state.report.length - 1, onclick: () => move(1) }, '↓'),
+        el('button', { class: 'icon-btn', type: 'button', title: 'Remove from report', onclick: () => { state.report.splice(pos, 1); render(); scheduleSave(); } }, '✕'))),
+    filters.length > 0 && el('p', { class: 'muted small' }, `Filtered: ${filters.map((f) => `${c[f.column].name} ${f.op}${f.value != null && f.value !== '' ? ` ${f.value}` : ''}`).join(' and ')}`),
+    missing.length > 0 && el('p', { class: 'pill warn' }, `Column ${[...new Set(missing)].join(', ')} no longer exists, so this item can't be shown.`),
+    content,
+    note);
+}
+
+function renderReport() {
+  return el('div', { class: 'report-view' },
+    el('div', { class: 'report-toolbar' },
+      el('div', {},
+        el('h2', { class: 'report-heading' }, `${state.dataset.name}: report`),
+        el('p', { class: 'muted small report-meta' }, `${plural(state.dataset.rowCount, 'row')} · ${formatDate(Date.now())}${state.steps.length ? ` · ${plural(state.steps.length, 'cleaning step')}` : ''}`)),
+      el('div', { class: 'report-actions' },
+        el('button', { class: 'btn small', type: 'button', onclick: () => pin({ kind: 'text', title: 'Notes' }) }, '+ Add text'),
+        el('button', { class: 'btn small primary', type: 'button', disabled: !state.report.length, onclick: () => window.print() }, '🖨 Print / Save as PDF'))),
+    state.report.length
+      ? state.report.map(renderReportItem)
+      : el('div', { class: 'card empty report-empty' },
+        el('p', {}, el('strong', {}, 'Your report is empty.')),
+        el('p', { class: 'muted' }, 'Use 📌 Add to report on a chart, summary, answer or key-drivers list. Everything stays live: if you clean the data or open new data with the same columns, the report updates.'),
+        el('button', { class: 'btn small', type: 'button', onclick: () => { state.tab = 'chart'; render(); } }, 'Go to Chart builder')),
+    learnTip('report'));
+}
+
 // ---------- learn ----------
 
 function renderLearn() {
@@ -887,13 +1326,17 @@ function render() {
   $name.textContent = loaded ? state.dataset.name : '';
   $name.hidden = !loaded;
   document.getElementById('home-btn').hidden = !loaded;
+  document.getElementById('save-btn').hidden = !loaded;
   clear($app).append(loaded ? renderWorkspace() : renderHome());
   if (loaded) window.scrollTo(0, scrollY);
 }
 
 document.getElementById('open-btn').addEventListener('click', () => $fileInput.click());
-document.getElementById('home-btn').addEventListener('click', () => {
+document.getElementById('save-btn').addEventListener('click', saveProjectFile);
+document.getElementById('home-btn').addEventListener('click', async () => {
+  await saveNow();
   state.dataset = null;
+  store.set('openProject', null);
   // Back on the start screen nothing can be lost, so a waiting update installs now.
   if (pendingUpdate) pendingUpdate();
   else render();
@@ -945,6 +1388,15 @@ window.addEventListener('paste', (e) => {
 });
 
 window.addEventListener('keydown', (e) => {
+  if (e.key === '/' && state.dataset && !e.target.closest?.('input, textarea, select')) {
+    e.preventDefault();
+    if (state.tab !== 'overview') {
+      state.tab = 'overview';
+      render();
+    }
+    document.querySelector('.ask-input')?.focus();
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && state.dataset && state.steps.length && !e.target.closest?.('input, textarea, select')) {
     e.preventDefault();
     undo();
@@ -992,11 +1444,12 @@ async function checkForUpdates() {
 
 function showUpdateBar() {
   clear($updateBar).append(
-    el('span', {}, el('strong', {}, 'A new version of Lumora is ready.'), ' It installs automatically next time you go back to the start screen.'),
+    el('span', {}, el('strong', {}, 'A new version of Lumora is ready.'), ' Your work is saved and reopens right after updating.'),
     el('button', {
       class: 'btn primary small', type: 'button',
-      onclick: () => {
-        if (state.steps.length && !confirm('Updating reloads Lumora and closes your current data and cleaning steps. Export anything you need first. Update now?')) return;
+      onclick: async () => {
+        // Work is auto-saved and reopens after the reload.
+        await saveNow();
         pendingUpdate();
       },
     }, 'Update now'),
@@ -1033,8 +1486,19 @@ if (lastSeen && compareVersions(VERSION, lastSeen) > 0) {
 store.set('version', VERSION);
 
 // Expose for debugging and automated tests.
-window.lumora = { state, loadText, loadSample, addStep, undo, version: VERSION };
+window.lumora = { state, loadText, loadSample, addStep, undo, saveNow, version: VERSION };
 
 const params = new URLSearchParams(location.search);
+const reopen = store.get('openProject', null);
 if (params.get('sample')) loadSample(params.get('sample'));
-else render();
+else if (reopen) {
+  render();
+  loadProject(reopen)
+    .then((json) => {
+      if (json && !state.dataset) {
+        openProject(json);
+        toast('Welcome back! Your work was restored.', 'info');
+      }
+    })
+    .catch(() => {});
+} else render();

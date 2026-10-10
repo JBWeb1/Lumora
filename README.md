@@ -9,6 +9,10 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 ## Features
 
 - **Instant loading.** Drag and drop (or paste) **Excel (.xlsx)**, CSV, TSV or JSON. Workbooks with several sheets ask which sheet to open. Lumora detects the delimiter and works out each column's type: number, date, yes/no, category or text. You can override any type with one click.
+- **Ask questions in plain English.** For example "which weekday has the most customers", "total revenue on rainy days", "exam score over time" or "what drives exam score". You get a one-line answer, a table and a chart. Lumora always shows how it understood the question, so you can check it. It runs fully on-device, with no AI service and no data sent anywhere. Press `/` to ask from anywhere.
+- **Key drivers.** Pick a column and see every other column ranked by how much of its variation it explains, with plain-English explanations and a reminder that related does not mean caused.
+- **Reports.** Pin charts, summaries, answers and key drivers, add notes, reorder them, then print or save as PDF. Report items stay live, so they update when the data is cleaned and follow renamed columns.
+- **Auto-save and projects.** Work is saved in the browser as you go and listed under "Continue where you left off" on the start screen. **Save project** downloads a `.lumora` file (data, cleaning steps, settings and report) that you can reopen or share.
 - **Automatic insights.** It finds missing data, strong correlations, outliers, skewed columns, big differences between groups, ID columns and date ranges. A **Show me →** button opens the chart that proves each finding.
 - **Column profiles.** Each column gets a mini histogram or top values, plus a full statistics panel (mean, median, quartiles, IQR, skewness, outliers, …).
 - **Chart builder with "Auto" mode.** Choose columns and Lumora picks a histogram, bar, scatter (with trend line and R²), line (with moving average) or box plot, and explains *why* it chose that chart.
@@ -19,7 +23,7 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 - **Filters** that apply everywhere: overview, table, charts and summaries.
 - **Group & summarize** (pivot tables) with count, sum, mean, median, min, max, standard deviation and distinct counts. Dates can be grouped by day, month, year or weekday.
 - **Searchable, sortable table** and **CSV export** of filtered data and summaries.
-- **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **eight guided lessons** use built-in practice datasets.
+- **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **ten guided lessons** use built-in practice datasets.
 - **Self-updating.** New versions download in the background and install automatically. If you have data open, Lumora asks first so nothing is lost. A "What's new" note appears after each update. It also works offline and can be installed as an app.
 - Light and dark themes, a layout that works on phones, and no dependencies.
 
@@ -57,13 +61,16 @@ assets/                   Logo in several sizes (favicon, app icon)
 src/app.js                UI: home, overview, table, chart, summarize, clean, learn
 src/version.js            app version and user-facing changelog
 sw.js, manifest.webmanifest  offline cache, self-updating, installable app
-src/ui/                   DOM helpers, SVG charts, chart export, update handling
+src/ui/                   DOM helpers, SVG charts, chart export, update handling, project storage
 src/core/                 Pure, tested logic (no DOM):
   csv.js                    CSV/TSV/JSON parsing
   infer.js                  type detection and conversion
   stats.js                  descriptive stats, histogram, correlation, regression
   transform.js              filter, sort, group-by, formatting, export
   insights.js               automatic plain-English findings
+  ask.js                    plain-English question parser
+  drivers.js                key-driver ranking
+  project.js                save/restore projects (.lumora files)
   clean.js                  replayable cleaning steps (powers undo)
   formula.js                safe formula parser/evaluator for calculated columns
   significance.js           t-test, ANOVA, chi-square, correlation test + verdicts
@@ -76,10 +83,9 @@ tests/                    node:test unit tests
 
 ## Roadmap ideas
 
-1. **Ask in plain English.** "Which weekday has the highest revenue?" turns into the right filter, group and chart (powered by an LLM).
-2. **Dashboards and reports.** Pin charts, add notes, and share as a link or PDF.
-3. **Save projects** (data + cleaning steps + charts) and reopen them later.
-4. **Simple forecasting** and multiple regression ("what drives exam scores?").
-5. **Connections** to Google Sheets and databases.
-6. **Web Worker processing** for files with millions of rows.
-7. **Progress tracking** for lessons, plus quizzes and achievements.
+1. **Optional AI assistant** for open-ended questions the on-device parser can't handle (opt-in, with clear notice before any data leaves the device).
+2. **Simple forecasting** and multiple regression.
+3. **Share a report as a link.**
+4. **Connections** to Google Sheets and databases.
+5. **Web Worker processing** for files with millions of rows.
+6. **Progress tracking** for lessons, plus quizzes and achievements.

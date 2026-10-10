@@ -1,6 +1,6 @@
 {
   "name": "lumora",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Data analysis that is easy to use and easy to learn. Runs entirely in the browser.",
   "type": "module",
   "private": true,

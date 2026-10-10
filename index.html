@@ -27,6 +27,7 @@
         <span>Learn mode</span>
       </label>
       <button id="theme-btn" class="icon-btn" type="button" aria-label="Toggle dark mode" title="Toggle dark mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+      <button id="save-btn" class="btn" type="button" title="Download a project file you can reopen later or share" hidden>⇩ Save project</button>
       <button id="open-btn" class="btn primary" type="button">Open file</button>
     </div>
   </header>
@@ -35,7 +36,7 @@
   <footer id="app-footer" class="app-footer"></footer>
   <div id="update-bar" class="update-bar" role="status" hidden></div>
 
-  <input id="file-input" type="file" accept=".csv,.tsv,.txt,.json,.xlsx,.xlsm,.xls,text/csv,application/json" hidden>
+  <input id="file-input" type="file" accept=".csv,.tsv,.txt,.json,.lumora,.xlsx,.xlsm,.xls,text/csv,application/json" hidden>
   <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
   <dialog id="dialog"></dialog>
   <div class="drop-overlay" aria-hidden="true"><div>Drop your file to analyse it</div></div>
