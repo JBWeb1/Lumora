@@ -20,6 +20,7 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 - **Group & summarize** (pivot tables) with count, sum, mean, median, min, max, standard deviation and distinct counts. Dates can be grouped by day, month, year or weekday.
 - **Searchable, sortable table** and **CSV export** of filtered data and summaries.
 - **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **eight guided lessons** use built-in practice datasets.
+- **Self-updating.** New versions download in the background and install automatically. If you have data open, Lumora asks first so nothing is lost. A "What's new" note appears after each update. It also works offline and can be installed as an app.
 - Light and dark themes, a layout that works on phones, and no dependencies.
 
 ## Run it
@@ -31,13 +32,32 @@ npm test         # unit tests (Node 18+)
 
 There is no build step. Any static host (GitHub Pages, Netlify, …) can serve the repository as is. Add `?sample=coffee` or `?sample=students` to the URL to open with practice data.
 
+## Updates and releases
+
+Lumora is a Progressive Web App. `sw.js` (a service worker) keeps a complete copy of the current version for offline use. The browser re-checks it on every visit, every 30 minutes, and when you click **Check for updates**. When a new version is published:
+
+1. The new version downloads in the background while the old one keeps running.
+2. If nothing is open, it switches over immediately. If you have data open, a banner offers **Update now** or **Later**. "Later" installs it the next time you return to the start screen.
+3. After reloading, a "What's new" note lists the changes.
+
+**To publish a release:**
+
+1. Bump the version in `package.json`, `src/version.js` and `sw.js`, and add release notes to `CHANGELOG` in `src/version.js`. `npm test` fails if these disagree or if a new file is missing from the offline list in `sw.js`.
+2. Merge to `main`. The **Deploy** workflow runs the tests and publishes to GitHub Pages. Everyone's copy then updates itself.
+
+One-time setup: in the repository's **Settings → Pages**, set the source to **GitHub Actions**.
+
+During development (`npm start` on localhost) the service worker is off, so edits show up instantly. Add `?sw` to the URL to test offline mode and updates locally.
+
 ## Project layout
 
 ```
 index.html, styles.css    App shell and design system (brand colours from the logo)
 assets/                   Logo in several sizes (favicon, app icon)
-src/app.js                UI: home, overview, table, chart, summarize, learn
-src/ui/                   DOM helpers and SVG chart rendering
+src/app.js                UI: home, overview, table, chart, summarize, clean, learn
+src/version.js            app version and user-facing changelog
+sw.js, manifest.webmanifest  offline cache, self-updating, installable app
+src/ui/                   DOM helpers, SVG charts, chart export, update handling
 src/core/                 Pure, tested logic (no DOM):
   csv.js                    CSV/TSV/JSON parsing
   infer.js                  type detection and conversion

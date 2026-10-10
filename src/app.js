@@ -15,6 +15,8 @@ import { SAMPLES, sampleCSV } from './core/samples.js';
 import { el, clear, select, download, installTooltip } from './ui/dom.js';
 import { renderChart, heatmap, sparkHistogram } from './ui/charts.js';
 import { exportChart } from './ui/export.js';
+import { initUpdates, watchInstallPrompt, compareVersions } from './ui/updates.js';
+import { VERSION, CHANGELOG } from './version.js';
 
 // ---------- state ----------
 
@@ -890,7 +892,12 @@ function render() {
 }
 
 document.getElementById('open-btn').addEventListener('click', () => $fileInput.click());
-document.getElementById('home-btn').addEventListener('click', () => { state.dataset = null; render(); });
+document.getElementById('home-btn').addEventListener('click', () => {
+  state.dataset = null;
+  // Back on the start screen nothing can be lost, so a waiting update installs now.
+  if (pendingUpdate) pendingUpdate();
+  else render();
+});
 $fileInput.addEventListener('change', () => {
   loadFile($fileInput.files[0]);
   $fileInput.value = '';
@@ -946,8 +953,87 @@ window.addEventListener('keydown', (e) => {
 
 installTooltip(document.getElementById('tooltip'));
 
+// ---------- self-updating ----------
+
+const $footer = document.getElementById('app-footer');
+const $updateBar = document.getElementById('update-bar');
+let updates = null;
+let pendingUpdate = null;
+let installApp = null;
+
+function renderFooter() {
+  clear($footer).append(...[
+    el('span', {}, `Lumora v${VERSION}`),
+    el('button', { class: 'link-btn', type: 'button', onclick: () => showWhatsNew() }, "What's new"),
+    updates && el('button', { class: 'link-btn', type: 'button', onclick: checkForUpdates }, 'Check for updates'),
+    installApp && el('button', { class: 'link-btn', type: 'button', onclick: () => installApp() }, '⇩ Install app'),
+    el('span', { class: 'muted' }, 'Your data never leaves this device.'),
+  ].filter(Boolean));
+}
+
+function showWhatsNew(since) {
+  const entries = since ? CHANGELOG.filter((c) => compareVersions(c.version, since) > 0) : CHANGELOG;
+  openDialog(since ? `Lumora updated to v${VERSION}` : "What's new in Lumora",
+    entries.map((c) => el('section', { class: 'release' },
+      el('h3', {}, `v${c.version}`, el('span', { class: 'muted small' }, ` · ${c.date}`)),
+      el('ul', {}, c.items.map((item) => el('li', {}, item))))));
+}
+
+async function checkForUpdates() {
+  toast('Checking for updates…', 'info');
+  try {
+    const result = await updates.check();
+    if (result === 'latest') toast(`You have the latest version (v${VERSION}).`, 'info');
+    else toast('Downloading the new version…', 'info');
+  } catch {
+    toast("Couldn't check for updates. Are you offline?");
+  }
+}
+
+function showUpdateBar() {
+  clear($updateBar).append(
+    el('span', {}, el('strong', {}, 'A new version of Lumora is ready.'), ' It installs automatically next time you go back to the start screen.'),
+    el('button', {
+      class: 'btn primary small', type: 'button',
+      onclick: () => {
+        if (state.steps.length && !confirm('Updating reloads Lumora and closes your current data and cleaning steps. Export anything you need first. Update now?')) return;
+        pendingUpdate();
+      },
+    }, 'Update now'),
+    el('button', { class: 'btn ghost small', type: 'button', onclick: () => { $updateBar.hidden = true; } }, 'Later'));
+  $updateBar.hidden = false;
+}
+
+// Runs in the background so it never delays the first screen.
+initUpdates({
+  onReady(apply) {
+    pendingUpdate = apply;
+    // Nothing open? Update silently. Otherwise never interrupt someone's analysis.
+    if (!state.dataset) apply();
+    else showUpdateBar();
+  },
+}).then((u) => {
+  updates = u;
+  renderFooter();
+});
+watchInstallPrompt((install) => {
+  installApp = install;
+  renderFooter();
+});
+renderFooter();
+
+// After an update, tell people what changed (once).
+const lastSeen = store.get('version', null);
+if (lastSeen && compareVersions(VERSION, lastSeen) > 0) {
+  const t = el('div', { class: 'toast info', role: 'status' }, `Lumora updated to v${VERSION}. `,
+    el('button', { class: 'link-btn on-dark', type: 'button', onclick: () => { t.remove(); showWhatsNew(lastSeen); } }, "See what's new"));
+  document.body.append(t);
+  setTimeout(() => t.remove(), 10000);
+}
+store.set('version', VERSION);
+
 // Expose for debugging and automated tests.
-window.lumora = { state, loadText, loadSample, addStep, undo };
+window.lumora = { state, loadText, loadSample, addStep, undo, version: VERSION };
 
 const params = new URLSearchParams(location.search);
 if (params.get('sample')) loadSample(params.get('sample'));

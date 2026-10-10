@@ -1,0 +1,14 @@
+{
+  "name": "Lumora",
+  "short_name": "Lumora",
+  "description": "Data analysis that is easy to use and easy to learn.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#011132",
+  "theme_color": "#011132",
+  "icons": [
+    { "src": "assets/logo-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/logo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
