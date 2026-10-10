@@ -1,5 +1,7 @@
 # Lumora
 
+<p align="center"><img src="assets/logo-192.png" alt="Lumora logo" width="96" height="96"></p>
+
 **Data analysis that is easy to use and easy to learn.**
 
 Drop in a spreadsheet and Lumora tells you what is inside in plain English. It flags problems and interesting patterns, picks the right chart, and teaches you the statistics along the way. Everything runs in your browser, so your data is never uploaded.
@@ -32,7 +34,8 @@ There is no build step. Any static host (GitHub Pages, Netlify, …) can serve t
 ## Project layout
 
 ```
-index.html, styles.css    App shell and design system
+index.html, styles.css    App shell and design system (brand colours from the logo)
+assets/                   Logo in several sizes (favicon, app icon)
 src/app.js                UI: home, overview, table, chart, summarize, learn
 src/ui/                   DOM helpers and SVG chart rendering
 src/core/                 Pure, tested logic (no DOM):

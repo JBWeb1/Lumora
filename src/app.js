@@ -232,6 +232,7 @@ function renderHome() {
 
   return el('div', { class: 'home' },
     el('section', { class: 'hero' },
+      el('img', { class: 'hero-logo', src: 'assets/logo-192.png', alt: 'Lumora logo', width: 96, height: 96 }),
       el('h1', {}, 'Understand your data ', el('span', { class: 'glow' }, 'in seconds')),
       el('p', { class: 'lead' }, 'Lumora reads your spreadsheet, explains what is inside in plain English, and helps you build the right chart, even if you have never studied statistics.'),
       drop),

@@ -14,6 +14,7 @@ const TYPES = {
   '.csv': 'text/csv',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.ico': 'image/x-icon',
 };
 
 createServer(async (req, res) => {
