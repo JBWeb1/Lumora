@@ -131,6 +131,21 @@ export const GLOSSARY = {
     short: 'Collect your findings with notes, then print or save as PDF.',
     body: 'Pin charts, summaries, answers and key drivers to the Report tab and add a note to each explaining what it shows. Items stay connected to your data, so they update if you clean it. Use "Print / Save as PDF" to share a clean document: the buttons and menus are hidden when printing.',
   },
+  combine: {
+    term: 'Combining files',
+    short: 'Stack files with the same columns, or join files that share a column.',
+    body: 'Stacking ("append") puts the rows of one file under another: January, February and March sales become one table, with a "source" column saying where each row came from. Joining ("merge" or "lookup") adds columns from another file by matching a shared column, like adding each customer\'s city to their orders by matching customer_id. Lumora shows how many rows match before you commit, and warns when a value appears more than once (which repeats rows). Both are cleaning steps, so you can undo them.',
+  },
+  pivot: {
+    term: 'Pivot table',
+    short: 'A summary split two ways: one column down the side, another across the top.',
+    body: 'A pivot table answers questions like "average customers for each weekday in each month". Each cell summarises the rows that match both its row and its column. The Total row and column summarise all matching rows, so for averages they are the true average (not the average of the cells). The shading makes high and low values easy to spot.',
+  },
+  forecast: {
+    term: 'Forecast and likely range',
+    short: 'An estimate of future values based on the trend and repeating patterns so far.',
+    body: 'Lumora uses exponential smoothing (Holt-Winters): it follows the recent level and trend, plus a weekly pattern for daily data or a yearly pattern for monthly data. The shaded "likely range" is an 80% prediction interval: about 8 out of 10 future values should land inside it, and it widens the further ahead you look. Lumora also back-tests itself: it hides the most recent stretch, forecasts it, and tells you how far off it was. A forecast only knows the past: holidays, price changes or one-off events will surprise it.',
+  },
   filter: {
     term: 'Filters',
     short: 'Focus on the rows that matter for your question.',
@@ -212,5 +227,19 @@ export const LESSONS = [
     body: 'Which habits are most related to exam scores? Key drivers ranks every column and explains each relationship. Notice "passed" tops the list: it is calculated from the score, a reminder that related does not mean caused.',
     terms: ['drivers', 'correlation'],
     try: { sample: 'students', tab: 'drivers', drivers: 'exam_score' },
+  },
+  {
+    id: 'pivot',
+    title: '11. Two-way summaries (pivot tables)',
+    body: 'Are weekends busier in summer? A pivot table splits the average number of customers by day of the week (rows) and month (columns). The darker the cell, the busier.',
+    terms: ['pivot', 'groupby'],
+    try: { sample: 'coffee', tab: 'summarize', summarize: { by: 'date', dateUnit: 'weekday', cols: 'date', colUnit: 'month', aggs: [{ fn: 'mean', column: 'customers' }] } },
+  },
+  {
+    id: 'forecast',
+    title: '12. What happens next? Forecasting',
+    body: 'Turn on the forecast to project revenue for the next 30 days, with a shaded likely range. Read the note under the chart: it tells you how accurate the forecast was when tested on the past.',
+    terms: ['forecast', 'line'],
+    try: { sample: 'coffee', tab: 'chart', chart: { type: 'line', x: 'date', y: 'revenue', forecast: 30 } },
   },
 ];

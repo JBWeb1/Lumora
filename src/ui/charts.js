@@ -181,8 +181,9 @@ export function scatterChart(data) {
 export function lineChart(data) {
   const m = { t: 20, r: 24, b: 52, l: 68 };
   const pts = data.points;
-  const [x0, x1] = extent(pts.map((p) => p.x));
-  const [y0, y1] = extent(pts.map((p) => p.y));
+  const fc = data.forecast?.points ?? null;
+  const [x0, x1] = extent([...pts.map((p) => p.x), ...(fc ? fc.map((p) => p.x) : [])]);
+  const [y0, y1] = extent([...pts.map((p) => p.y), ...(fc ? fc.flatMap((p) => [p.lo, p.hi]) : [])]);
   const yt = niceTicks(Math.min(0, y0), y1, 6);
   const y = scale(yt[0], yt[yt.length - 1], H - m.b, m.t);
   let x;
@@ -208,8 +209,27 @@ export function lineChart(data) {
     pts.map((p) =>
       svg('circle', { class: pts.length <= 60 ? 'dot point' : 'hover-point', cx: x(p.x), cy: y(p.y), r: pts.length <= 60 ? 3.5 : 4, 'data-tip': `${fmtX(p.x)}: ${formatNumber(p.y)}` })
     ),
+    fc && forecastLayer(fc, pts[pts.length - 1], x, y, m, fmtX),
     axisTitles(data.xLabel, data.yLabel, m, W, H),
   ]);
+}
+
+/** Dashed forecast line with its shaded "likely range", starting from the last real point. */
+function forecastLayer(fc, last, x, y, m, fmtX) {
+  const P = (px, py) => `${x(px).toFixed(1)},${y(py).toFixed(1)}`;
+  const band = `M${P(last.x, last.y)}${fc.map((p) => `L${P(p.x, p.hi)}`).join('')}${[...fc].reverse().map((p) => `L${P(p.x, p.lo)}`).join('')}Z`;
+  const line = `M${P(last.x, last.y)}${fc.map((p) => `L${P(p.x, p.y)}`).join('')}`;
+  const divider = x(last.x);
+  return [
+    svg('line', { class: 'forecast-divider', x1: divider, x2: divider, y1: m.t, y2: H - m.b }),
+    svg('text', { class: 'forecast-label', x: divider + 6, y: m.t + 12 }, 'Forecast →'),
+    svg('path', { class: 'forecast-band', d: band }),
+    svg('path', { class: 'forecast-line', d: line }),
+    fc.map((p) => svg('circle', {
+      class: 'hover-point', cx: x(p.x), cy: y(p.y), r: 5,
+      'data-tip': `Forecast ${fmtX(p.x)}: ${formatNumber(p.y)} (likely ${formatNumber(p.lo)} to ${formatNumber(p.hi)})`,
+    })),
+  ];
 }
 
 export function boxChart(data) {

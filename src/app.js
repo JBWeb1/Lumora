@@ -3,16 +3,16 @@ import { applyStep, describeStep, duplicateRows, runRecipe } from './core/clean.
 import { FUNCTIONS, evaluateFormula } from './core/formula.js';
 import { testColumns } from './core/significance.js';
 import { readXlsx } from './core/xlsx.js';
-import { describe, frequencies, histogram, numbers, correlationMatrix, correlationStrength } from './core/stats.js';
+import { describe, extent, frequencies, histogram, numbers, correlationMatrix, correlationStrength } from './core/stats.js';
 import {
   AGGREGATIONS, FILTER_OPS, NO_VALUE_OPS, aggregate, applyFilters, datasetToCSV, formatDate, formatNumber, formatValue,
-  groupBy, searchRows, sortIndices, toCSV,
+  groupBy, pivotTable, pivotToTable, searchRows, sortIndices, toCSV,
 } from './core/transform.js';
-import { generateInsights } from './core/insights.js';
+import { OVERVIEW_SAMPLE, overviewData } from './core/overview.js';
 import { CHART_TYPES, buildChartData, suggestChart } from './core/chartspec.js';
 import { GLOSSARY, LESSONS } from './core/learn.js';
 import { SAMPLES, sampleCSV } from './core/samples.js';
-import { el, clear, select, download, installTooltip } from './ui/dom.js';
+import { el, appendTo, clear, select, download, installTooltip } from './ui/dom.js';
 import { renderChart, heatmap, sparkHistogram } from './ui/charts.js';
 import { exportChart } from './ui/export.js';
 import { initUpdates, watchInstallPrompt, compareVersions } from './ui/updates.js';
@@ -21,6 +21,10 @@ import { exampleQuestions, parseQuestion } from './core/ask.js';
 import { canBeTarget, keyDrivers, strengthWord } from './core/drivers.js';
 import { deserializeProject, isProject, newProjectId, projectSummary, serializeProject } from './core/project.js';
 import { deleteProject, listProjects, loadProject, saveProject } from './ui/storage.js';
+import { loadFileInBackground } from './ui/loader.js';
+import { matchColumns, previewJoin, rawTable, suggestJoinKeys } from './core/combine.js';
+import { DEFAULT_HORIZON, HORIZONS } from './core/forecast.js';
+import { EXCEL_MAX_ROWS, datasetSheet, writeXlsx } from './core/xlsxwrite.js';
 
 // ---------- state ----------
 
@@ -124,12 +128,37 @@ function openTerm(key) {
   openDialog(g.term, el('p', { class: 'lead' }, g.short), el('p', {}, g.body));
 }
 
+// ---------- big data: remember results and sample the heaviest analyses ----------
+
+// Results are remembered per set of rows; the set is rebuilt whenever data or filters change,
+// so switching tabs or toggling Learn mode never recalculates.
+const memoStore = new WeakMap();
+function memo(rows, key, fn) {
+  let m = memoStore.get(rows);
+  if (!m) memoStore.set(rows, (m = new Map()));
+  if (!m.has(key)) m.set(key, fn());
+  return m.get(key);
+}
+
+/** Key drivers and significance tests look at up to this many rows (evenly spread). */
+const SAMPLE_LIMIT = 100_000;
+function analysisRows(rows) {
+  if (rows.length <= SAMPLE_LIMIT) return rows;
+  return memo(rows, 'sample', () => {
+    const step = rows.length / SAMPLE_LIMIT;
+    return Array.from({ length: SAMPLE_LIMIT }, (_, k) => rows[Math.floor(k * step)]);
+  });
+}
+function sampleNote(limit = SAMPLE_LIMIT) {
+  return indices.length > limit && el('p', { class: 'sample-note' }, `ⓘ Large dataset: the analyses in this view use an evenly spread sample of ${limit.toLocaleString('en-US')} of the ${indices.length.toLocaleString('en-US')} rows. Counts, missing values, filters, tables, summaries and exports always use every row.`);
+}
+
 function recompute() {
   indices = state.dataset ? applyFilters(state.dataset, state.filters) : [];
 }
 
-function update() {
-  recompute();
+function update({ keepRows = false } = {}) {
+  if (!keepRows) recompute();
   render();
   scheduleSave();
 }
@@ -151,7 +180,7 @@ function chooseDefaults() {
   state.summarize = { by, dateUnit: 'month', aggs: [{ fn: 'count', column: null }, ...(num >= 0 ? [{ fn: 'mean', column: num }] : [])] };
 }
 
-function loadDataset(ds) {
+function loadDataset(ds, overview = null) {
   if (!ds.columns.length || !ds.rowCount) throw new Error('No rows found. Is the first line a header row?');
   state.original = ds;
   state.steps = [];
@@ -163,9 +192,13 @@ function loadDataset(ds) {
   state.ask = { question: '', parsed: null };
   state.drivers = { target: null };
   store.set('openProject', state.projectId);
+  warnedTooBig = false;
   chooseDefaults();
   state.tab = 'overview';
-  update();
+  recompute();
+  // The background loader already computed the Overview for all rows; reuse it.
+  if (overview && indices.length === ds.rowCount) memo(indices, 'overview', () => overview);
+  update({ keepRows: true });
 }
 
 function loadText(text, fileName) {
@@ -190,41 +223,173 @@ function loadText(text, fileName) {
   }
 }
 
-async function loadExcel(buffer, fileName) {
-  const base = fileName.replace(/\.[^.]+$/, '');
-  try {
-    const sheets = await readXlsx(buffer);
-    const open = (sheet) => loadDataset(buildDataset(sheets.length > 1 ? `${base} · ${sheet.name}` : base, sheet.headers, sheet.rows));
-    if (sheets.length === 1) {
-      open(sheets[0]);
-      return;
-    }
+// ---------- reading files (in the background, with progress) ----------
+
+const STAGES = {
+  reading: [0, 0.05, 'Reading the file…'],
+  parsing: [0.05, 0.7, 'Reading rows…'],
+  columns: [0.7, 0.95, 'Working out column types…'],
+  sending: [0.95, 0.99, 'Almost done…'],
+  finishing: [0.99, 1, 'Almost done…'],
+};
+
+/** A progress card that only appears if loading takes more than a moment. */
+function progressCard(fileName, onCancel) {
+  const label = el('span', { class: 'muted small' }, 'Reading the file…');
+  const fill = el('span', { class: 'progress-fill' });
+  const pct = el('span', { class: 'progress-pct' }, '0%');
+  const card = el('div', { class: 'load-progress', role: 'status', 'aria-live': 'polite' },
+    el('strong', {}, `Opening ${fileName}`),
+    el('div', { class: 'progress-track' }, fill),
+    el('div', { class: 'progress-row' }, label, pct),
+    el('button', { class: 'btn ghost small', type: 'button', onclick: onCancel }, 'Cancel'));
+  const timer = setTimeout(() => document.body.append(card), 250);
+  return {
+    update(stage, fraction) {
+      const [a, b, text] = STAGES[stage] ?? STAGES.finishing;
+      const f = a + (b - a) * Math.min(1, Math.max(0, fraction));
+      fill.style.width = `${Math.round(f * 100)}%`;
+      pct.textContent = `${Math.round(f * 100)}%`;
+      label.textContent = text;
+    },
+    hide: () => card.remove(),
+    show: () => document.body.append(card),
+    close() {
+      clearTimeout(timer);
+      card.remove();
+    },
+  };
+}
+
+/** Ask which sheet of a workbook to open. Resolves the index, or null if the dialog is closed. */
+function chooseSheet(fileName, sheets) {
+  return new Promise((resolve) => {
+    let picked = null;
     openDialog('Choose a sheet',
       el('p', { class: 'muted' }, `${fileName} has ${sheets.length} sheets with data.`),
-      el('div', { class: 'sheet-list' }, sheets.map((s) =>
-        el('button', { class: 'card sheet', type: 'button', onclick: () => { $dialog.close(); open(s); } },
-          el('strong', {}, s.name), el('span', { class: 'muted' }, `${plural(s.rows.length, 'row')} · ${plural(s.headers.length, 'column')}`)))));
+      el('div', { class: 'sheet-list' }, sheets.map((s, i) =>
+        el('button', { class: 'card sheet', type: 'button', onclick: () => { picked = i; $dialog.close(); } },
+          el('strong', {}, s.name), el('span', { class: 'muted' }, `${plural(s.rows, 'row')} · ${plural(s.columns, 'column')}`)))));
+    $dialog.addEventListener('close', () => resolve(picked), { once: true });
+  });
+}
+
+/** Fallback when the browser can't run the background loader: read on the page. */
+function readOnPage(file) {
+  return new Promise((resolve, reject) => {
+    const excel = /\.(xlsx|xlsm)$/i.test(file.name);
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('the file could not be opened'));
+    reader.onload = async () => {
+      try {
+        if (excel) {
+          const sheets = await readXlsx(reader.result);
+          const idx = sheets.length === 1 ? 0 : await chooseSheet(file.name, sheets.map((s) => ({ name: s.name, rows: s.rows.length, columns: s.headers.length })));
+          if (idx == null) return resolve(null);
+          const base = file.name.replace(/\.[^.]+$/, '');
+          const sheet = sheets[idx];
+          resolve({ dataset: buildDataset(sheets.length > 1 ? `${base} · ${sheet.name}` : base, sheet.headers, sheet.rows) });
+          return;
+        }
+        const text = String(reader.result);
+        if (/^\s*\{/.test(text)) {
+          try {
+            const json = JSON.parse(text);
+            if (isProject(json)) return resolve({ project: json });
+          } catch {
+            /* not a project; parse as data below */
+          }
+        }
+        resolve({ dataset: datasetFromText(text, file.name) });
+      } catch (err) {
+        reject(err);
+      }
+    };
+    if (excel) reader.readAsArrayBuffer(file);
+    else reader.readAsText(file);
+  });
+}
+
+/**
+ * Read any supported file. Resolves { dataset } or { project }, or null when cancelled
+ * or failed (the person has already been told why).
+ */
+async function readFile(file, { allowProject = true } = {}) {
+  if (/\.xls$/i.test(file.name)) {
+    toast('Old .xls files aren\'t supported. In Excel choose File → Save As → Excel Workbook (.xlsx) or CSV.');
+    return null;
+  }
+  if (file.size > 1.5 * 1024 ** 3) {
+    toast('That file is over 1.5 GB, which is more than a browser can hold in memory. Try splitting it into smaller files.');
+    return null;
+  }
+  let job = null;
+  const progress = progressCard(file.name, () => job?.cancel());
+  job = loadFileInBackground(file, (stage, f) => progress.update(stage, f));
+  try {
+    let result = await job.promise;
+    if (result.kind === 'fallback') {
+      progress.update('parsing', 0.5);
+      result = await readOnPage(file);
+      if (!result) return null;
+    } else if (result.kind === 'project') {
+      result = { project: JSON.parse(result.text) };
+    } else if (result.kind === 'sheets') {
+      progress.hide();
+      const index = await chooseSheet(file.name, result.sheets);
+      if (index == null) {
+        job.cancel();
+        return null;
+      }
+      progress.show();
+      result = await result.pick(index);
+    }
+    if (result.project && !allowProject) throw new Error('that is a Lumora project file, not a data file.');
+    if (result.dataset && (!result.dataset.columns.length || !result.dataset.rowCount)) throw new Error('no rows found. Is the first line a header row?');
+    return result;
   } catch (err) {
-    toast(`Couldn't read ${fileName}: ${err.message}`);
+    if (err.message !== 'cancelled') toast(`Couldn't read ${file.name}: ${err.message}`);
+    return null;
+  } finally {
+    progress.close();
   }
 }
 
-function loadFile(file) {
+async function loadFile(file) {
   if (!file) return;
-  if (file.size > 200 * 1024 * 1024) {
-    toast('That file is over 200 MB. Lumora runs in your browser and works best with files under 50 MB.');
-    return;
+  const result = await readFile(file);
+  if (!result) return;
+  try {
+    if (result.project) openProject(result.project, { imported: true });
+    else loadDataset(result.dataset, result.overview);
+  } catch (err) {
+    toast(`Couldn't open ${file.name}: ${err.message}`);
   }
-  if (/\.xls$/i.test(file.name)) {
-    toast('Old .xls files aren\'t supported. In Excel choose File → Save As → Excel Workbook (.xlsx) or CSV.');
-    return;
+}
+
+/** Several files at once: open the first and stack the others under it when their columns match. */
+async function loadFiles(fileList) {
+  const files = [...fileList];
+  if (files.length <= 1) return loadFile(files[0]);
+  const first = await readFile(files[0], { allowProject: false });
+  if (!first) return;
+  loadDataset(first.dataset);
+  const headers = first.dataset.columns.map((c) => c.name);
+  const steps = [];
+  const skipped = [];
+  for (const f of files.slice(1)) {
+    const r = await readFile(f, { allowProject: false });
+    if (!r) continue;
+    const other = rawTable(r.dataset);
+    const m = matchColumns(headers, other.headers);
+    if (!m.onlyBase.length && !m.onlyOther.length) steps.push({ op: 'append', data: other, sourceColumn: 'source', baseLabel: first.dataset.name });
+    else skipped.push(f.name);
   }
-  const excel = /\.(xlsx|xlsm)$/i.test(file.name);
-  const reader = new FileReader();
-  reader.onload = () => (excel ? loadExcel(reader.result, file.name) : loadText(String(reader.result), file.name));
-  reader.onerror = () => toast(`Couldn't open ${file.name}.`);
-  if (excel) reader.readAsArrayBuffer(file);
-  else reader.readAsText(file);
+  if (steps.length) {
+    setSteps(steps);
+    toast(`Stacked ${files.length - skipped.length} files. The "source" column shows which file each row came from.`, 'info');
+  }
+  if (skipped.length) setTimeout(() => toast(`${skipped.join(', ')} ${skipped.length === 1 ? 'has' : 'have'} different columns, so ${skipped.length === 1 ? 'it was' : 'they were'} not stacked. Use Clean → Combine with another file to join ${skipped.length === 1 ? 'it' : 'them'}.`), steps.length ? 4500 : 0);
 }
 
 function loadSample(id) {
@@ -237,12 +402,14 @@ function runLesson(lesson) {
   if (state.dataset?.name !== SAMPLES.find((s) => s.id === t.sample).name || state.steps.length) loadSample(t.sample);
   else state.filters = [];
   if (t.chart) {
-    state.chart = { type: t.chart.type ?? 'auto', x: colIndex(t.chart.x), y: t.chart.y ? colIndex(t.chart.y) : null, agg: 'mean', color: null };
+    state.chart = { type: t.chart.type ?? 'auto', x: colIndex(t.chart.x), y: t.chart.y ? colIndex(t.chart.y) : null, agg: 'mean', color: null, forecast: t.chart.forecast ?? null };
   }
   if (t.summarize) {
     state.summarize = {
       by: colIndex(t.summarize.by),
-      dateUnit: 'month',
+      dateUnit: t.summarize.dateUnit ?? 'month',
+      cols: t.summarize.cols ? colIndex(t.summarize.cols) : null,
+      colUnit: t.summarize.colUnit ?? 'month',
       aggs: t.summarize.aggs.map((a) => ({ fn: a.fn, column: a.column ? colIndex(a.column) : null })),
     };
   }
@@ -375,10 +542,8 @@ function renderOverview() {
   const ds = state.dataset;
   const c = cols();
   const cells = indices.length * c.length;
-  let missing = 0;
-  for (const col of c) for (const i of indices) if (col.values[i] == null) missing++;
-  const insights = generateInsights(ds, indices);
-  const numeric = c.filter((col) => col.type === 'number');
+  const ov = memo(indices, 'overview', () => overviewData(ds, indices));
+  const { missing, insights } = ov;
 
   return el('div', { class: 'overview' },
     renderAsk(),
@@ -390,21 +555,18 @@ function renderOverview() {
         const n = c.filter((col) => col.type === t).length;
         return n ? `${n} ${label.toLowerCase()}` : null;
       }).filter(Boolean).join(' · '), 'types', true)),
+    sampleNote(OVERVIEW_SAMPLE),
     el('section', {},
       el('h2', {}, 'What Lumora noticed'),
       learnTip('types', 'Lumora reads every column, works out what kind of data it holds and flags anything interesting or suspicious.'),
       el('div', { class: 'insights' }, insights.map(insightCard))),
     el('section', {},
       el('h2', {}, 'Columns'),
-      el('div', { class: 'column-grid' }, c.map((col, i) => columnCard(col, i)))),
-    numeric.length >= 2 && el('section', {},
+      el('div', { class: 'column-grid' }, c.map((col, i) => columnCard(col, i, ov.cards[i])))),
+    ov.corr && el('section', {},
       el('h2', {}, 'How number columns relate'),
       learnTip('correlation'),
-      el('div', { class: 'card chart-card scroll-x' }, (() => {
-        const shown = numeric.slice(0, 12);
-        const { names, matrix } = correlationMatrix(shown.map((col) => ({ name: col.name, values: indices.map((i) => col.values[i]) })));
-        return heatmap(names, matrix);
-      })())));
+      el('div', { class: 'card chart-card scroll-x' }, heatmap(ov.corr.names, ov.corr.matrix))));
 }
 
 function kpi(label, value, term, wide) {
@@ -435,30 +597,26 @@ function showAction(action) {
   render();
 }
 
-function columnCard(col, index) {
-  const values = indices.map((i) => col.values[i]);
-  const present = values.filter((v) => v != null);
-  const missingPct = values.length ? (1 - present.length / values.length) * 100 : 0;
+function columnCard(col, index, summary) {
+  const { missingPct } = summary;
   let body;
-  if (col.type === 'number' && present.length) {
-    const d = describe(present);
-    body = [sparkHistogram(histogram(present, 16)), statLine([['mean', d.mean, 'mean'], ['median', d.median, 'median'], ['min', d.min], ['max', d.max]])];
-  } else if (col.type === 'date' && present.length) {
-    const ts = numbers(present);
-    body = el('p', { class: 'muted' }, `${formatDate(Math.min(...ts))} → ${formatDate(Math.max(...ts))}`);
-  } else if (present.length) {
-    const freq = frequencies(present);
-    const top = freq.slice(0, 4);
-    if (freq[0].count === 1) {
-      body = [el('p', { class: 'muted small' }, `Every value is different (${plural(freq.length, 'distinct value')}), e.g.`),
+  if (summary.stats) {
+    const d = summary.stats;
+    body = [sparkHistogram(summary.bins), statLine([['mean', d.mean, 'mean'], ['median', d.median, 'median'], ['min', d.min], ['max', d.max]])];
+  } else if (summary.range) {
+    body = el('p', { class: 'muted' }, `${formatDate(summary.range[0])} → ${formatDate(summary.range[1])}`);
+  } else if (summary.top) {
+    const top = summary.top;
+    if (top[0].count === 1) {
+      body = [el('p', { class: 'muted small' }, `Every value is different (${plural(summary.distinct, 'distinct value')}), e.g.`),
         el('p', { class: 'sample-values' }, top.map((f) => formatValue(f.value, col.type)).join(', '))];
     } else body = [
       el('div', { class: 'mini-bars' }, top.map((f) =>
         el('div', { class: 'mini-bar', 'data-tip': `${formatValue(f.value, col.type)}: ${f.count} rows` },
           el('span', { class: 'mini-label' }, formatValue(f.value, col.type)),
-          el('span', { class: 'mini-track' }, el('span', { class: 'mini-fill', style: { width: `${(f.count / present.length) * 100}%` } })),
-          el('span', { class: 'mini-pct' }, `${Math.round((f.count / present.length) * 100)}%`)))),
-      freq.length > 4 && el('p', { class: 'muted small' }, `${plural(freq.length, 'distinct value')}`),
+          el('span', { class: 'mini-track' }, el('span', { class: 'mini-fill', style: { width: `${(f.count / summary.count) * 100}%` } })),
+          el('span', { class: 'mini-pct' }, `${Math.round((f.count / summary.count) * 100)}%`)))),
+      summary.distinct > 4 && el('p', { class: 'muted small' }, `${plural(summary.distinct, 'distinct value')}`),
     ];
   } else {
     body = el('p', { class: 'muted' }, 'No values.');
@@ -501,7 +659,8 @@ function openProfile(index) {
       ['Skewness', Number.isFinite(d.skew) ? d.skew.toFixed(2) : '–', 'skewness'], ['Outliers', d.outliers, 'outlier'], ['Sum', formatNumber(d.sum)]);
     chartData = buildChartData(state.dataset, indices, { type: 'histogram', x: index });
   } else if (col.type === 'date' && present.length) {
-    rows.push(['Earliest', formatDate(Math.min(...present))], ['Latest', formatDate(Math.max(...present))]);
+    const [lo, hi] = extent(present);
+    rows.push(['Earliest', formatDate(lo)], ['Latest', formatDate(hi)]);
     chartData = buildChartData(state.dataset, indices, { type: 'line', x: index });
   } else if (present.length) {
     const top = frequencies(present)[0];
@@ -519,6 +678,7 @@ function openProfile(index) {
 // ---------- table ----------
 
 const PAGE_SIZE = 50;
+let searchTimer = null;
 
 function renderTable() {
   const t = state.table;
@@ -557,10 +717,19 @@ function renderTable() {
         el('button', { class: 'btn small', disabled: t.page === 0, onclick: () => { t.page--; draw(); } }, '← Prev'),
         el('button', { class: 'btn small', disabled: t.page >= pages - 1, onclick: () => { t.page++; draw(); } }, 'Next →')));
   };
-  wrap.append(
+  appendTo(wrap,
     el('div', { class: 'toolbar' },
-      el('input', { type: 'search', class: 'search', placeholder: 'Search all columns…', value: t.search, 'aria-label': 'Search rows', oninput: (e) => { t.search = e.target.value; t.page = 0; draw(); } }),
-      el('button', { class: 'btn small', onclick: () => download(`${state.dataset.name}-filtered.csv`, datasetToCSV(state.dataset, indices)) }, '⇩ Export CSV')),
+      el('input', { type: 'search', class: 'search', placeholder: 'Search all columns…', value: t.search, 'aria-label': 'Search rows', oninput: (e) => {
+        t.search = e.target.value;
+        t.page = 0;
+        // Searching millions of cells on every keystroke would lag; wait for a pause in typing.
+        clearTimeout(searchTimer);
+        if (state.dataset.rowCount > 50000) searchTimer = setTimeout(draw, 250);
+        else draw();
+      } }),
+      el('div', { class: 'toolbar-actions' },
+        el('button', { class: 'btn small', onclick: () => download(`${state.dataset.name}-filtered.csv`, datasetToCSV(state.dataset, indices)) }, '⇩ CSV'),
+        el('button', { class: 'btn small', onclick: () => exportExcel(`${state.dataset.name}${state.filters.length ? ' filtered' : ''}`, [datasetSheet(state.dataset, indices)]) }, '⇩ Excel'))),
     state.learn && el('p', { class: 'muted small' }, 'Click a column header to sort. Missing values are shown as — and always sort last.'),
     body);
   draw();
@@ -576,7 +745,11 @@ function renderChartTab() {
   const yCol = ch.y == null ? null : c[ch.y];
   const suggestion = suggestChart(xCol, yCol);
   const type = ch.type === 'auto' ? suggestion.type : ch.type;
-  const data = type ? buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg, color: ch.color }) : { error: suggestion.reason };
+  let data = type ? buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg, color: ch.color }) : { error: suggestion.reason };
+  // Forecasts need a date axis; the date grouping (day/month/year) decides the sensible horizons.
+  const canForecast = type === 'line' && data.xIsDate && HORIZONS[data.unit];
+  const horizon = canForecast && ch.forecast ? (HORIZONS[data.unit].some(([h]) => h === ch.forecast) ? ch.forecast : DEFAULT_HORIZON[data.unit]) : null;
+  if (horizon) data = buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg, forecast: horizon });
   const usesAgg = yCol?.type === 'number' && (type === 'bar' || type === 'line');
   const colOptions = c.map((col, i) => ({ value: i, label: `${TYPE_ICONS[col.type]}  ${col.name}` }));
 
@@ -588,7 +761,8 @@ function renderChartTab() {
     usesAgg && field('Combine values with', select(Object.entries(AGGREGATIONS).filter(([k]) => k !== 'distinct').map(([k, v]) => ({ value: k, label: v.label })), ch.agg, (v) => { ch.agg = v; render(); })),
     type === 'scatter' && field('Color by (optional)', select(
       [{ value: '', label: '— none —' }, ...c.map((col, i) => ({ col, i })).filter(({ col }) => col.type === 'category' || col.type === 'boolean').map(({ col, i }) => ({ value: i, label: col.name }))],
-      ch.color ?? '', (v) => { ch.color = v === '' ? null : +v; render(); })));
+      ch.color ?? '', (v) => { ch.color = v === '' ? null : +v; render(); })),
+    canForecast && field('Forecast', select([{ value: '', label: 'Off' }, ...HORIZONS[data.unit].map(([h, label]) => ({ value: h, label: `Next ${label}` }))], horizon ?? '', (v) => { ch.forecast = v === '' ? null : +v; render(); }, { 'aria-label': 'Forecast' })));
 
   const chartEl = data.error ? null : renderChart(data);
   const title = data.error ? '' : [data.yLabel ?? data.valueLabel, data.xLabel ?? data.groupLabel].filter(Boolean).join(' by ');
@@ -603,14 +777,43 @@ function renderChartTab() {
           el('span', { class: 'muted small' }, 'Download chart:'),
           el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'png') }, '⇩ PNG'),
           el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'svg') }, '⇩ SVG'),
+          el('button', { class: 'btn small', type: 'button', title: 'Excel file with the chart’s data and an editable Excel chart', onclick: () => exportExcel(`${state.dataset.name} ${title}`, [chartSheet(data, title), ...dataSheetFor(indices)]) }, '⇩ Excel'),
           el('button', { class: 'btn small primary', type: 'button', onclick: () => pin({ kind: 'chart', title: title || 'Chart', chart: chartRefs(state.chart, type) }) }, '📌 Add to report')),
       ]),
     significanceCard(ch),
     type && learnTip(CHART_TYPES[type].term));
 }
 
+/** One sheet holding a chart's data plus the matching editable Excel chart. */
+function chartSheet(data, title) {
+  const chart = (type, valueColumns, extra = {}) => ({ type, title, valueColumns, xTitle: data.xLabel ?? data.groupLabel, yTitle: data.yLabel ?? data.valueLabel, ...extra });
+  switch (data.type) {
+    case 'bar':
+      return { name: 'Chart data', headers: [data.xLabel, data.valueLabel], types: ['text', 'number'], rows: data.bars.map((b) => [b.label, b.value]), chart: chart('bar', [1]) };
+    case 'histogram':
+      return { name: 'Chart data', headers: [`${data.xLabel} range`, 'Rows'], types: ['text', 'number'], rows: data.bins.map((b) => [`${formatNumber(b.x0)} to ${formatNumber(b.x1)}`, b.count]), chart: chart('bar', [1], { yTitle: 'Rows' }) };
+    case 'scatter':
+      return { name: 'Chart data', headers: [data.xLabel, data.yLabel], types: ['number', 'number'], rows: data.points.map((p) => [p.x, p.y]), chart: chart('scatter', [1]) };
+    case 'box':
+      return {
+        name: 'Chart data', headers: [data.groupLabel ?? data.valueLabel, 'Rows', 'Minimum', 'Q1', 'Median', 'Q3', 'Maximum', 'Mean'], types: ['text', ...Array(7).fill('number')],
+        rows: data.groups.map((g) => [g.label, g.stats.count, g.stats.min, g.stats.q1, g.stats.median, g.stats.q3, g.stats.max, g.stats.mean]),
+        chart: chart('bar', [4], { title: `Median ${data.valueLabel}`, yTitle: `median ${data.valueLabel}` }),
+      };
+    default: {
+      // Line chart, with forecast columns when a forecast is shown.
+      const f = data.forecast?.points ?? [];
+      const xType = data.xIsDate ? 'date' : 'number';
+      const headers = [data.xLabel, data.yLabel, ...(f.length ? ['Forecast', 'Likely low', 'Likely high'] : [])];
+      const rows = [...data.points.map((p) => [p.x, p.y, ...(f.length ? [null, null, null] : [])]), ...f.map((p) => [p.x, null, p.y, p.lo, p.hi])];
+      const seriesStyles = [{}, { color: 'E8833A', dash: true }, { color: 'A0AEC0', dash: true }, { color: 'A0AEC0', dash: true }];
+      return { name: 'Chart data', headers, types: [xType, 'number', 'number', 'number', 'number'], rows, chart: chart('line', f.length ? [1, 2, 3, 4] : [1], { seriesStyles }) };
+    }
+  }
+}
+
 function significanceCard(ch) {
-  const res = testColumns(state.dataset, indices, ch.x, ch.y);
+  const res = memo(indices, `test:${ch.x}:${ch.y}`, () => testColumns(state.dataset, analysisRows(indices), ch.x, ch.y));
   if (!res) return null;
   return el('section', { class: `card significance ${res.verdict.level}` },
     el('div', { class: 'sig-head' },
@@ -648,20 +851,98 @@ function chartNotes(data) {
   } else if (data.type === 'line') {
     if (data.unit && data.unit !== 'day') notes.push(`Values are combined per ${data.unit}.`);
     if (data.smooth) notes.push(`The orange line is a ${data.window}-point moving average: it smooths out short-term ups and downs so the overall trend is easier to see.`);
+    const f = data.forecast;
+    if (f?.error) notes.push(`Forecast unavailable: ${f.error}`);
+    else if (f) {
+      const per = { day: 'day', month: 'month', year: 'year' }[f.unit];
+      notes.push([el('strong', {}, 'Forecast: '), `the next ${plural(f.horizon, per)} should total about ${formatNumber(f.total.y)} (likely ${formatNumber(f.total.lo)} to ${formatNumber(f.total.hi)}), around ${formatNumber(f.average)} per ${per}. The shaded band is the `, termLink('forecast', 'likely range'), ` (80% of outcomes should fall inside it). ${f.note}`]);
+      if (f.accuracy?.pctError != null) notes.push(`How reliable? When Lumora hid the last ${plural(f.accuracy.periods, per)} and forecast them, it was off by about ${Math.round(f.accuracy.pctError * 100)}% on average.`);
+      notes.push('Forecasts assume the future behaves like the past. Holidays, promotions or one-off events are not known to Lumora.');
+    }
   }
   return notes.length ? el('ul', { class: 'chart-notes' }, notes.map((n) => el('li', {}, n))) : null;
 }
 
 // ---------- summarize ----------
 
+const DATE_UNITS = [['day', 'day'], ['month', 'month'], ['year', 'year'], ['weekday', 'day of week']].map(([value, label]) => ({ value, label }));
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+/** Write sheets to an .xlsx file and download it. */
+async function exportExcel(fileBase, sheets) {
+  if (sheets.some((sh) => sh.rows.length > EXCEL_MAX_ROWS)) toast(`Excel holds at most ${EXCEL_MAX_ROWS.toLocaleString('en-US')} rows per sheet, so only the first ones were exported.`);
+  else if (sheets.reduce((n, sh) => n + sh.rows.length, 0) > 50000) toast('Preparing the Excel file…', 'info');
+  await new Promise((r) => setTimeout(r, 30)); // let the message paint before the heavy work
+  try {
+    const bytes = await writeXlsx({ sheets });
+    download(`${fileBase.replace(/[^\w\- ]+/g, '').trim() || 'lumora'}.xlsx`, new Blob([bytes], { type: XLSX_MIME }));
+  } catch (err) {
+    toast(`Couldn't create the Excel file: ${err.message}`);
+  }
+}
+
+/** The filtered data as an extra sheet, when it is a sensible size. */
+const dataSheetFor = (rows) => (rows.length <= 100000 ? [datasetSheet(state.dataset, rows, 'Data')] : []);
+
+function summaryResult(s, rows) {
+  return memo(rows, `summary:${JSON.stringify([s.by, s.dateUnit, s.aggs, s.sort ?? null])}`, () => runSummary(s, rows));
+}
+
+function pivotResult(s, rows) {
+  const a = s.aggs[0] ?? { fn: 'count', column: null };
+  return memo(rows, `pivot:${JSON.stringify([s.by, s.dateUnit, s.cols, s.colUnit, a])}`, () =>
+    pivotTable(state.dataset, rows, { rows: s.by, rowUnit: s.dateUnit, columns: s.cols, colUnit: s.colUnit ?? 'month', fn: a.fn, column: a.column }));
+}
+
+function renderPivot(p) {
+  const vals = p.cells.flat().filter(Number.isFinite);
+  const [lo, hi] = extent(vals);
+  // Shade cells by value so patterns jump out (a "heat map" table).
+  const shade = (v) => (Number.isFinite(v) && hi > lo ? { background: `color-mix(in srgb, var(--accent) ${Math.round(6 + (44 * (v - lo)) / (hi - lo))}%, transparent)` } : null);
+  return el('div', { class: 'card table-scroll pivot' },
+    el('table', { class: 'data-table pivot-table' },
+      el('thead', {}, el('tr', {},
+        el('th', { class: 'corner' }, el('span', { class: 'muted small' }, `${p.rowLabel} ↓ · ${p.colLabel} →`)),
+        p.colKeys.map((k) => el('th', { class: 'num' }, k)),
+        el('th', { class: 'num total' }, 'Total'))),
+      el('tbody', {}, p.rowKeys.map((rk, r) => el('tr', {},
+        el('th', { class: 'row-key' }, rk),
+        p.cells[r].map((v, c) => el('td', { class: 'num', style: shade(v), 'data-tip': `${rk} · ${p.colKeys[c]}: ${formatNumber(v)}` }, v == null ? '' : formatNumber(v))),
+        el('td', { class: 'num total' }, formatNumber(p.rowTotals[r]))))),
+      el('tfoot', {}, el('tr', {},
+        el('th', {}, 'Total'),
+        p.colTotals.map((v) => el('td', { class: 'num total' }, formatNumber(v))),
+        el('td', { class: 'num total' }, formatNumber(p.grandTotal))))),
+    p.hiddenColumns > 0 && el('p', { class: 'muted small' }, `Showing the ${p.colKeys.length} largest of ${p.colKeys.length + p.hiddenColumns} columns. Choose a coarser grouping (e.g. month instead of day) to see everything.`));
+}
+
+function pivotSheets(p) {
+  const t = pivotToTable(p);
+  const series = Math.min(12, p.colKeys.length);
+  return [{
+    name: 'Pivot', headers: t.headers, types: ['text', ...p.colKeys.map(() => 'number'), 'number'], rows: t.rows,
+    chart: { type: 'bar', title: `${p.valueLabel} by ${p.rowLabel} and ${p.colLabel}`, valueColumns: Array.from({ length: series }, (_, k) => k + 1), rowLimit: p.rowKeys.length, xTitle: p.rowLabel, yTitle: p.valueLabel },
+  }];
+}
+
+function summarySheets(result, byCol, dateUnit) {
+  const overTime = byCol.type === 'date' && dateUnit !== 'weekday';
+  return [{
+    name: 'Summary', headers: result.headers, types: [byCol.type === 'number' ? 'number' : 'text', ...result.headers.slice(1).map(() => 'number')], rows: result.rows,
+    chart: result.headers.length > 1 ? { type: overTime ? 'line' : 'bar', title: `${result.headers[1]} by ${result.headers[0]}`, valueColumns: [1], xTitle: result.headers[0], yTitle: result.headers[1] } : null,
+  }];
+}
+
 function renderSummarize() {
   const s = state.summarize;
   const c = cols();
   const byCol = c[s.by];
+  const pivotCol = s.cols == null ? null : c[s.cols];
   const numericOptions = c.map((col, i) => ({ col, i })).filter(({ col }) => col.type === 'number' || col.type === 'boolean');
-  const result = groupBy(state.dataset, indices, s);
+  const pivot = pivotCol ? pivotResult(s, indices) : null;
+  const result = pivot ? null : summaryResult(s, indices);
 
-  const aggRows = s.aggs.map((a, k) => el('div', { class: 'agg-row' },
+  const aggRows = (pivot ? s.aggs.slice(0, 1) : s.aggs).map((a, k) => el('div', { class: 'agg-row' },
     select(Object.entries(AGGREGATIONS).map(([fn, v]) => ({ value: fn, label: v.label })), a.fn, (fn) => {
       a.fn = fn;
       if (fn === 'count') a.column = null;
@@ -676,22 +957,34 @@ function renderSummarize() {
     a.fn !== 'count' && select(
       (AGGREGATIONS[a.fn].needsNumber ? numericOptions : c.map((col, i) => ({ col, i }))).map(({ col, i }) => ({ value: i, label: col.name })),
       a.column, (v) => { a.column = +v; render(); }, { 'aria-label': 'Column to summarise' }),
-    s.aggs.length > 1 && el('button', { class: 'icon-btn', 'aria-label': 'Remove summary', onclick: () => { s.aggs.splice(k, 1); render(); } }, '✕')));
+    !pivot && s.aggs.length > 1 && el('button', { class: 'icon-btn', 'aria-label': 'Remove summary', onclick: () => { s.aggs.splice(k, 1); render(); } }, '✕')));
 
-  const firstValueCol = result.headers.length > 1 ? 1 : null;
+  const firstValueCol = result && result.headers.length > 1 ? 1 : null;
   const bars = firstValueCol && result.rows.map((r) => ({ label: String(r[0]), value: r[firstValueCol] })).filter((b) => Number.isFinite(b.value));
+  const title = pivot ? `${pivot.valueLabel} by ${pivot.rowLabel} and ${pivot.colLabel}` : `${result.headers.slice(1).join(', ')} by ${result.headers[0]}`;
+  const table = pivot ? pivotToTable(pivot) : result;
 
   return el('div', { class: 'summarize-view' },
     el('div', { class: 'card summarize-controls' },
       el('div', { class: 'agg-row' },
         el('span', { class: 'field-label' }, 'Group rows by'),
         select(c.map((col, i) => ({ value: i, label: col.name })), s.by, (v) => { s.by = +v; render(); }, { 'aria-label': 'Group by' }),
-        byCol.type === 'date' && select([['day', 'day'], ['month', 'month'], ['year', 'year'], ['weekday', 'day of week']].map(([value, label]) => ({ value, label })), s.dateUnit, (v) => { s.dateUnit = v; render(); }, { 'aria-label': 'Date grouping' })),
+        byCol.type === 'date' && select(DATE_UNITS, s.dateUnit, (v) => { s.dateUnit = v; render(); }, { 'aria-label': 'Date grouping' })),
+      el('div', { class: 'agg-row' },
+        el('span', { class: 'field-label' }, 'Split into columns by'),
+        select([{ value: '', label: '— none (simple summary) —' }, ...c.map((col, i) => ({ value: i, label: col.name }))], s.cols ?? '', (v) => {
+          s.cols = v === '' ? null : +v;
+          if (s.cols != null && c[s.cols].type === 'date') s.colUnit ??= 'month';
+          render();
+        }, { 'aria-label': 'Split into columns by' }),
+        pivotCol?.type === 'date' && select(DATE_UNITS, s.colUnit ?? 'month', (v) => { s.colUnit = v; render(); }, { 'aria-label': 'Column date grouping' }),
+        !pivot && el('span', { class: 'muted small' }, 'Pick a second column to get a two-way pivot table.')),
       el('div', { class: 'field-label' }, 'and calculate'),
       aggRows,
-      el('button', { class: 'btn ghost small', type: 'button', onclick: () => { s.aggs.push(numericOptions.length ? { fn: 'mean', column: numericOptions[0].i } : { fn: 'count', column: null }); render(); } }, '+ Add another summary')),
-    learnTip('groupby'),
-    el('div', { class: 'summary-grid' },
+      !pivot && el('button', { class: 'btn ghost small', type: 'button', onclick: () => { s.aggs.push(numericOptions.length ? { fn: 'mean', column: numericOptions[0].i } : { fn: 'count', column: null }); render(); } }, '+ Add another summary'),
+      pivot && s.aggs.length > 1 && el('p', { class: 'muted small' }, 'A pivot table shows one summary at a time: the first one above.')),
+    learnTip(pivot ? 'pivot' : 'groupby'),
+    pivot ? renderPivot(pivot) : el('div', { class: 'summary-grid' },
       el('div', { class: 'card table-scroll' },
         el('table', { class: 'data-table' },
           el('thead', {}, el('tr', {}, result.headers.map((h, j) => el('th', { class: j ? 'num' : '' }, h)))),
@@ -699,10 +992,11 @@ function renderSummarize() {
       bars && bars.length > 0 && el('div', { class: 'card chart-card' },
         el('div', { class: 'chart-wrap' }, renderChart({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[firstValueCol], bars: bars.slice(0, 30) })))),
     el('div', { class: 'toolbar' },
-      el('span', { class: 'muted' }, plural(result.rows.length, 'group')),
+      el('span', { class: 'muted' }, pivot ? `${plural(pivot.rowKeys.length, 'row')} × ${plural(pivot.colKeys.length, 'column')}` : plural(result.rows.length, 'group')),
       el('div', { class: 'toolbar-actions' },
-        el('button', { class: 'btn small', onclick: () => download(`${state.dataset.name}-summary.csv`, toCSV(result.headers, result.rows)) }, '⇩ Export summary CSV'),
-        el('button', { class: 'btn small primary', type: 'button', onclick: () => pin({ kind: 'summary', title: result.headers.slice(1).join(', ') + ` by ${result.headers[0]}`, summarize: summarizeRefs(state.summarize) }) }, '📌 Add to report'))));
+        el('button', { class: 'btn small', onclick: () => download(`${state.dataset.name}-${pivot ? 'pivot' : 'summary'}.csv`, toCSV(table.headers, table.rows)) }, '⇩ CSV'),
+        el('button', { class: 'btn small', title: 'Excel file with the table, a chart and your data', onclick: () => exportExcel(`${state.dataset.name} ${pivot ? 'pivot' : 'summary'}`, [...(pivot ? pivotSheets(pivot) : summarySheets(result, byCol, s.dateUnit)), ...dataSheetFor(indices)]) }, '⇩ Excel + chart'),
+        el('button', { class: 'btn small primary', type: 'button', onclick: () => pin({ kind: 'summary', title, summarize: summarizeRefs(state.summarize) }) }, '📌 Add to report'))));
 }
 
 // ---------- cleaning steps ----------
@@ -713,6 +1007,7 @@ function snapshotRefs() {
   return {
     chart: { x: name(state.chart.x), y: name(state.chart.y), color: name(state.chart.color) },
     by: name(state.summarize.by),
+    cols: name(state.summarize.cols),
     aggs: state.summarize.aggs.map((a) => ({ ...a, column: name(a.column) })),
     filters: state.filters.map((f) => ({ ...f, column: name(f.column) })),
     sort: name(state.table.sort),
@@ -730,6 +1025,7 @@ function restoreRefs(refs, renames) {
   state.chart.y = idx(refs.chart.y);
   state.chart.color = idx(refs.chart.color);
   state.summarize.by = idx(refs.by) ?? 0;
+  state.summarize.cols = idx(refs.cols);
   state.summarize.aggs = refs.aggs.map((a) => ({ ...a, column: idx(a.column) })).filter((a) => a.fn === 'count' || a.column != null);
   if (!state.summarize.aggs.length) state.summarize.aggs = [{ fn: 'count', column: null }];
   state.filters = refs.filters.map((f) => ({ ...f, column: idx(f.column) })).filter((f) => f.column != null);
@@ -767,6 +1063,7 @@ function renameInReport(from, to) {
     }
     if (item.summarize) {
       item.summarize.by = swap(item.summarize.by);
+      item.summarize.cols = swap(item.summarize.cols);
       item.summarize.aggs.forEach((a) => { a.column = swap(a.column); });
       fixFilters(item.summarize.filters);
     }
@@ -920,11 +1217,97 @@ function renderClean() {
     el('div', { class: 'history-actions' },
       el('button', { class: 'btn small', type: 'button', disabled: !state.steps.length, title: 'Ctrl+Z', onclick: undo }, '↶ Undo last'),
       el('button', { class: 'btn ghost small', type: 'button', disabled: !state.steps.length, onclick: () => { if (confirm('Remove all cleaning steps and go back to the original data?')) setSteps([]); } }, 'Start over'),
-      el('button', { class: 'btn small', type: 'button', onclick: () => download(`${ds.name}-clean.csv`, datasetToCSV(ds, [...Array(ds.rowCount).keys()])) }, '⇩ Export cleaned CSV')));
+      el('button', { class: 'btn small', type: 'button', onclick: () => download(`${ds.name}-clean.csv`, datasetToCSV(ds, [...Array(ds.rowCount).keys()])) }, '⇩ Cleaned CSV'),
+      el('button', { class: 'btn small', type: 'button', onclick: () => exportExcel(`${ds.name} clean`, [datasetSheet(ds, [...Array(ds.rowCount).keys()])]) }, '⇩ Cleaned Excel')));
 
   return el('div', { class: 'clean-view' },
-    el('div', { class: 'clean-actions' }, learnTip('cleaning'), dupCard, missingCard, formulaCard, textCard, renameCard, keepCard),
+    el('div', { class: 'clean-actions' }, learnTip('cleaning'), combineCard(), dupCard, missingCard, formulaCard, textCard, renameCard, keepCard),
     history);
+}
+
+// ---------- combine ----------
+
+/** Pick a file from disk, read it in the background, and return its dataset. */
+function pickDataFile() {
+  return new Promise((resolve) => {
+    const input = el('input', { type: 'file', accept: '.csv,.tsv,.txt,.json,.xlsx,.xlsm', hidden: true });
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      input.remove();
+      if (!file) return resolve(null);
+      const r = await readFile(file, { allowProject: false });
+      resolve(r?.dataset ?? null);
+    });
+    document.body.append(input);
+    input.click();
+  });
+}
+
+function combineCard() {
+  return actionCard('Combine with another file', 'combine', 'Bring in data from a second file: stack more rows (e.g. February under January), or add columns by matching a shared column (e.g. customer details onto orders).',
+    el('div', { class: 'form-row' },
+      el('button', { class: 'btn primary small', type: 'button', onclick: async () => { const other = await pickDataFile(); if (other) appendDialog(rawTable(other)); } }, '+ Add rows (stack files)'),
+      el('button', { class: 'btn primary small', type: 'button', onclick: async () => { const other = await pickDataFile(); if (other) joinDialog(rawTable(other)); } }, '+ Add columns (join on a shared column)')));
+}
+
+function appendDialog(other) {
+  const m = matchColumns(cols().map((c) => c.name), other.headers);
+  const opts = { source: true };
+  const list = (names) => names.map((n) => el('code', {}, n)).reduce((acc, x, i) => (i ? [...acc, ', ', x] : [x]), []);
+  openDialog(`Add rows from ${other.name}`,
+    el('p', {}, `${plural(other.rows.length, 'row')} will be added under your ${plural(state.dataset.rowCount, 'row')}.`),
+    el('ul', { class: 'match-list' },
+      el('li', { class: 'ok' }, `✓ ${plural(m.matched.length, 'column')} match by name: `, list(m.matched)),
+      m.onlyOther.length > 0 && el('li', { class: 'warn' }, `+ Only in ${other.name} (kept, blank for your current rows): `, list(m.onlyOther)),
+      m.onlyBase.length > 0 && el('li', { class: 'warn' }, `○ Only in your current data (blank for the new rows): `, list(m.onlyBase))),
+    !m.matched.length && el('p', { class: 'pill warn' }, 'No column names match, so the files may not belong together. Did you mean to add columns (join) instead?'),
+    el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: true, onchange: (e) => { opts.source = e.target.checked; } }), ' Add a "source" column that shows which file each row came from'),
+    el('div', { class: 'dialog-actions' },
+      el('button', { class: 'btn primary', type: 'button', onclick: () => { $dialog.close(); addStep({ op: 'append', data: other, sourceColumn: opts.source ? 'source' : null, baseLabel: state.original.name }); } }, 'Add rows'),
+      el('button', { class: 'btn ghost', type: 'button', onclick: () => $dialog.close() }, 'Cancel')));
+}
+
+const JOIN_TYPES = [
+  ['left', 'Keep all my rows', 'Rows without a match get blank values for the new columns. Usually what you want.'],
+  ['inner', 'Only rows that match', 'Rows without a match in the other file are removed.'],
+  ['full', 'All rows from both files', 'Unmatched rows from the other file are added too.'],
+];
+
+function joinDialog(other) {
+  const c = cols();
+  const guess = suggestJoinKeys(state.dataset, other);
+  const opts = { leftKey: guess?.leftKey ?? c[0].name, rightKey: guess?.rightKey ?? other.headers[0], how: 'left' };
+  const preview = el('div', { class: 'join-preview' });
+  const drawPreview = () => {
+    const p = previewJoin(state.dataset, other, opts);
+    clear(preview);
+    if (!p) return;
+    const pctMatched = p.leftRows ? Math.round((p.matchedLeft / p.leftRows) * 100) : 0;
+    // Native append() would print `false` for skipped lines, so drop them first.
+    preview.append(...[
+      el('p', { class: pctMatched >= 50 ? 'ok' : 'warn' }, el('strong', {}, `${pctMatched}%`), ` of your rows find a match (${p.matchedLeft.toLocaleString('en-US')} of ${p.leftRows.toLocaleString('en-US')}).`),
+      p.unmatchedRight > 0 && el('p', { class: 'muted' }, `${plural(p.unmatchedRight, 'row')} in ${other.name} ${p.unmatchedRight === 1 ? 'matches' : 'match'} none of yours.`),
+      p.duplicateKeys > 0 && el('p', { class: 'warn' }, `⚠ ${plural(p.duplicateKeys, 'value')} appear more than once in ${other.name}, so matching rows will be repeated (one copy per match).`),
+      el('p', {}, 'Result: ', el('strong', {}, plural(p.resultRows, 'row')), ` × ${plural(c.length + other.headers.length - 1, 'column')}.`),
+      pctMatched === 0 && el('p', { class: 'pill warn' }, 'Nothing matches. Check that you picked the right columns.'),
+    ].filter(Boolean));
+  };
+  openDialog(`Add columns from ${other.name}`,
+    el('p', { class: 'muted' }, 'Rows are matched where these two columns have the same value (ignoring upper/lower case and extra spaces).'),
+    el('div', { class: 'join-keys' },
+      field('Your column', select(c.map((col) => ({ value: col.name, label: col.name })), opts.leftKey, (v) => { opts.leftKey = v; drawPreview(); })),
+      el('span', { class: 'join-eq', 'aria-hidden': 'true' }, '='),
+      field(`Column in ${other.name}`, select(other.headers.map((h) => ({ value: h, label: h })), opts.rightKey, (v) => { opts.rightKey = v; drawPreview(); }))),
+    el('fieldset', { class: 'join-types' },
+      el('legend', {}, 'Which rows to keep?'),
+      JOIN_TYPES.map(([value, label, help]) => el('label', { class: 'radio' },
+        el('input', { type: 'radio', name: 'join-how', value, checked: value === opts.how, onchange: () => { opts.how = value; drawPreview(); } }),
+        el('span', {}, el('strong', {}, label), el('span', { class: 'muted small' }, ` · ${help}`))))),
+    preview,
+    el('div', { class: 'dialog-actions' },
+      el('button', { class: 'btn primary', type: 'button', onclick: () => { $dialog.close(); addStep({ op: 'join', data: other, leftKey: opts.leftKey, rightKey: opts.rightKey, how: opts.how }); } }, 'Add columns'),
+      el('button', { class: 'btn ghost', type: 'button', onclick: () => $dialog.close() }, 'Cancel')));
+  drawPreview();
 }
 
 function actionCard(title, term, description, ...body) {
@@ -948,8 +1331,8 @@ function resolveFilters(refs = []) {
   const missing = refs.filter((f) => idxOf(f.column) == null).map((f) => f.column);
   return { filters: refs.filter((f) => idxOf(f.column) != null).map((f) => ({ ...f, column: idxOf(f.column) })), missing };
 }
-const chartRefs = (ch, type) => ({ type: type ?? ch.type, x: nameOf(ch.x), y: nameOf(ch.y), agg: ch.agg, color: nameOf(ch.color), filters: filterRefs(state.filters) });
-const summarizeRefs = (s) => ({ by: nameOf(s.by), dateUnit: s.dateUnit, aggs: s.aggs.map((a) => ({ fn: a.fn, column: nameOf(a.column) })), sort: s.sort ?? null, limit: s.limit ?? null, filters: filterRefs(state.filters) });
+const chartRefs = (ch, type) => ({ type: type ?? ch.type, x: nameOf(ch.x), y: nameOf(ch.y), agg: ch.agg, color: nameOf(ch.color), forecast: ch.forecast ?? null, filters: filterRefs(state.filters) });
+const summarizeRefs = (s) => ({ by: nameOf(s.by), dateUnit: s.dateUnit, cols: nameOf(s.cols), colUnit: s.colUnit ?? 'month', aggs: s.aggs.map((a) => ({ fn: a.fn, column: nameOf(a.column) })), sort: s.sort ?? null, limit: s.limit ?? null, filters: filterRefs(state.filters) });
 
 function viewByNames() {
   return {
@@ -964,11 +1347,13 @@ function viewByNames() {
 
 function restoreView(view = {}) {
   if (view.filters) state.filters = resolveFilters(view.filters).filters;
-  if (view.chart) state.chart = { type: view.chart.type ?? 'auto', x: idxOf(view.chart.x) ?? 0, y: idxOf(view.chart.y), agg: view.chart.agg ?? 'mean', color: idxOf(view.chart.color) };
+  if (view.chart) state.chart = { type: view.chart.type ?? 'auto', x: idxOf(view.chart.x) ?? 0, y: idxOf(view.chart.y), agg: view.chart.agg ?? 'mean', color: idxOf(view.chart.color), forecast: view.chart.forecast ?? null };
   if (view.summarize?.by) {
     state.summarize = {
       by: idxOf(view.summarize.by) ?? 0,
       dateUnit: view.summarize.dateUnit ?? 'month',
+      cols: idxOf(view.summarize.cols),
+      colUnit: view.summarize.colUnit ?? 'month',
       aggs: (view.summarize.aggs ?? []).map((a) => ({ fn: a.fn, column: idxOf(a.column) })).filter((a) => a.fn === 'count' || a.column != null),
     };
     if (!state.summarize.aggs.length) state.summarize.aggs = [{ fn: 'count', column: null }];
@@ -992,11 +1377,37 @@ function scheduleSave() {
   saveTimer = setTimeout(saveNow, 800);
 }
 
+// Very large datasets are not auto-saved: copying millions of cells into storage would
+// freeze the page. "Save project" still downloads a complete file.
+const AUTOSAVE_CELL_LIMIT = 3_000_000;
+let lastSavedData = { id: null, original: null, steps: null };
+let warnedTooBig = false;
+
+function cellCount() {
+  let n = state.original.rowCount * state.original.columns.length;
+  for (const s of state.steps) if (s.data) n += s.data.rows.length * s.data.headers.length;
+  return n;
+}
+
 async function saveNow() {
   clearTimeout(saveTimer);
   if (!state.dataset || !state.projectId) return;
+  if (cellCount() > AUTOSAVE_CELL_LIMIT) {
+    store.set('openProject', null);
+    if (!warnedTooBig) {
+      warnedTooBig = true;
+      toast('This dataset is very large, so it isn’t saved automatically. Use “Save project” to keep a copy.', 'info');
+    }
+    return;
+  }
+  const args = { id: state.projectId, original: state.original, steps: state.steps, view: viewByNames(), report: state.report, appVersion: VERSION };
+  const meta = { ...serializeProject({ ...args, includeData: false }), steps: undefined, stepCount: state.steps.length };
+  // Rows and steps are written only when they changed; settings and report every time.
+  const dataChanged = lastSavedData.id !== state.projectId || lastSavedData.original !== state.original || lastSavedData.steps !== state.steps;
+  const data = dataChanged ? { data: serializeProject(args).data, steps: state.steps } : null;
   try {
-    await saveProject(currentProject());
+    await saveProject(meta, data);
+    if (dataChanged) lastSavedData = { id: state.projectId, original: state.original, steps: state.steps };
   } catch {
     /* storage full or unavailable: the app keeps working; "Save project" still downloads a file */
   }
@@ -1015,6 +1426,9 @@ function openProject(json, { imported = false } = {}) {
   state.tab = 'overview';
   restoreView(p.view);
   store.set('openProject', state.projectId);
+  warnedTooBig = false;
+  // Opened from this browser's storage: its data is already saved.
+  lastSavedData = imported ? { id: null } : { id: state.projectId, original: state.original, steps: state.steps };
   update();
   if (p.skippedSteps) toast(`${plural(p.skippedSteps, 'cleaning step')} no longer applied and ${p.skippedSteps === 1 ? 'was' : 'were'} skipped.`);
   else if (imported) toast(`Opened project "${state.original.name}".`, 'info');
@@ -1147,12 +1561,13 @@ function renderAnswer(parsed) {
     actions.push(['Open in Summarize', () => { adoptFilters(); state.summarize = { by: r.by, dateUnit: r.dateUnit ?? 'month', aggs: [{ fn: r.fn, column: r.column }] }; state.tab = 'summarize'; update(); }]);
     actions.push(['📌 Add to report', () => pin({ kind: 'summary', title: parsed.understood, summarize: { by: nameOf(r.by), dateUnit: r.dateUnit ?? 'month', aggs: [{ fn: r.fn, column: nameOf(r.column) }], sort: r.sort, limit: r.limit, filters: filterRefs([...state.filters, ...parsed.filters]) } })]);
   } else if (r.type === 'chart') {
-    const data = buildChartData(state.dataset, rows, { ...r.chart, agg: 'mean' });
+    let data = buildChartData(state.dataset, rows, { ...r.chart, forecast: null, agg: 'mean' });
+    if (r.chart.forecast && data.unit) data = buildChartData(state.dataset, rows, { ...r.chart, agg: 'mean', forecast: DEFAULT_HORIZON[data.unit] });
     body = data.error ? el('p', {}, data.error) : [el('div', { class: 'chart-wrap' }, renderChart(data)), chartNotes(data)];
-    actions.push(['Open in Chart builder', () => { adoptFilters(); state.chart = { type: r.chart.type, x: r.chart.x, y: r.chart.y, agg: 'mean', color: null }; state.tab = 'chart'; update(); }]);
+    actions.push(['Open in Chart builder', () => { adoptFilters(); state.chart = { type: r.chart.type, x: r.chart.x, y: r.chart.y, agg: 'mean', color: null, forecast: r.chart.forecast ?? null }; state.tab = 'chart'; update(); }]);
     actions.push(['📌 Add to report', () => pin({ kind: 'chart', title: parsed.understood, chart: { type: r.chart.type, x: nameOf(r.chart.x), y: nameOf(r.chart.y), agg: 'mean', color: null, filters: filterRefs([...state.filters, ...parsed.filters]) } })]);
   } else if (r.type === 'drivers') {
-    const list = keyDrivers(state.dataset, rows, r.target).slice(0, 3);
+    const list = keyDrivers(state.dataset, analysisRows(rows), r.target).slice(0, 3);
     body = list.length
       ? el('ol', { class: 'answer-list' }, list.map((d) => el('li', {}, el('strong', {}, d.column), ` (${strengthWord(d.strength)}): `, d.sentence)))
       : el('p', {}, 'No other columns could be compared with this one.');
@@ -1179,7 +1594,7 @@ function renderDrivers() {
     state.drivers.target = (nums[nums.length - 1] ?? targets[0]).i;
   }
   const t = state.drivers.target;
-  const list = keyDrivers(state.dataset, indices, t);
+  const list = memo(indices, `drivers:${t}`, () => keyDrivers(state.dataset, analysisRows(indices), t));
   const max = Math.max(0.0001, ...list.map((d) => d.strength));
 
   return el('div', { class: 'drivers-view' },
@@ -1190,6 +1605,7 @@ function renderDrivers() {
         el('span', {}, '?')),
       el('button', { class: 'btn small primary', type: 'button', onclick: () => pin({ kind: 'drivers', title: `What is related to ${c[t].name}`, drivers: { target: c[t].name, filters: filterRefs(state.filters) } }) }, '📌 Add to report')),
     learnTip('drivers'),
+    sampleNote(),
     list.length ? el('ol', { class: 'driver-list' }, list.map((d) => el('li', { class: 'card driver' },
       el('div', { class: 'driver-head' },
         el('strong', { class: 'driver-name' }, d.column),
@@ -1227,13 +1643,16 @@ function renderReportItem(item) {
       const x = idxOf(ch.x);
       const y = idxOf(ch.y);
       const type = ch.type === 'auto' ? suggestChart(c[x], y == null ? null : c[y]).type : ch.type;
-      const data = buildChartData(state.dataset, rows, { type, x, y, agg: ch.agg, color: idxOf(ch.color) });
+      const data = buildChartData(state.dataset, rows, { type, x, y, agg: ch.agg, color: idxOf(ch.color), forecast: ch.forecast ?? null });
       content = data.error ? el('p', { class: 'muted' }, data.error) : [el('div', { class: 'chart-wrap' }, renderChart(data)), chartNotes(data)];
     }
   } else if (item.kind === 'summary') {
     const s = item.summarize;
-    missing = missing.concat(missingCols([s.by, ...s.aggs.map((a) => a.column)]));
-    if (!missing.length) {
+    missing = missing.concat(missingCols([s.by, s.cols, ...s.aggs.map((a) => a.column)]));
+    if (!missing.length && s.cols) {
+      const a = s.aggs[0];
+      content = renderPivot(pivotTable(state.dataset, rows, { rows: idxOf(s.by), rowUnit: s.dateUnit, columns: idxOf(s.cols), colUnit: s.colUnit, fn: a.fn, column: idxOf(a.column) }));
+    } else if (!missing.length) {
       const result = runSummary({ by: idxOf(s.by), dateUnit: s.dateUnit, aggs: s.aggs.map((a) => ({ fn: a.fn, column: idxOf(a.column) })), sort: s.sort }, rows);
       const shown = result.rows.slice(0, s.limit ? Math.max(s.limit, 5) : 25);
       content = el('div', { class: 'answer-grid' },
@@ -1251,7 +1670,7 @@ function renderReportItem(item) {
   } else if (item.kind === 'drivers') {
     missing = missing.concat(missingCols([item.drivers.target]));
     if (!missing.length) {
-      const list = keyDrivers(state.dataset, rows, idxOf(item.drivers.target)).slice(0, 5);
+      const list = keyDrivers(state.dataset, analysisRows(rows), idxOf(item.drivers.target)).slice(0, 5);
       content = el('ol', { class: 'answer-list' }, list.map((d) => el('li', {}, el('strong', {}, d.column), ` (${strengthWord(d.strength)}): `, d.sentence)));
     }
   }
@@ -1342,7 +1761,7 @@ document.getElementById('home-btn').addEventListener('click', async () => {
   else render();
 });
 $fileInput.addEventListener('change', () => {
-  loadFile($fileInput.files[0]);
+  loadFiles($fileInput.files);
   $fileInput.value = '';
 });
 
@@ -1379,7 +1798,7 @@ window.addEventListener('dragleave', (e) => {
 window.addEventListener('drop', (e) => {
   e.preventDefault();
   document.body.classList.remove('dragging');
-  loadFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) loadFiles(e.dataTransfer.files);
 });
 window.addEventListener('paste', (e) => {
   if (state.dataset || e.target.closest?.('input, textarea')) return;

@@ -8,6 +8,17 @@ export function numbers(values) {
   return out;
 }
 
+/** [min, max] with a plain loop: Math.min(...xs) crashes on arrays of ~100k+ values. */
+export function extent(xs) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const x of xs) {
+    if (x < lo) lo = x;
+    if (x > hi) hi = x;
+  }
+  return [lo, hi];
+}
+
 export function sum(xs) {
   let s = 0;
   for (const x of xs) s += x;

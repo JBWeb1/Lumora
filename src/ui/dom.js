@@ -36,6 +36,12 @@ export function svg(tag, props, ...children) {
   return node;
 }
 
+/** Append children like el() does: arrays are flattened and null/false are skipped. */
+export function appendTo(node, ...children) {
+  append(node, children);
+  return node;
+}
+
 export function clear(node) {
   while (node.firstChild) node.firstChild.remove();
   return node;

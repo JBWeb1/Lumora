@@ -2,6 +2,7 @@
 
 import { dateBucket, aggregate, groupKey } from './transform.js';
 import { describe, frequencies, histogram, isNum, linearRegression, pearson } from './stats.js';
+import { forecastSeries } from './forecast.js';
 
 export const CHART_TYPES = {
   histogram: { label: 'Histogram', term: 'histogram' },
@@ -67,7 +68,7 @@ const MAX_POINTS = 5000;
  * Prepare chart data. Returns { type, ...data } or { error } when the columns don't fit the chart.
  * options: { type, x, y, agg }  (x / y are column indices; y may be null)
  */
-export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mean', color = null }) {
+export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mean', color = null, forecast = null }) {
   let xCol = dataset.columns[x];
   let yCol = y == null ? null : dataset.columns[y];
   if (!xCol) return { error: 'Pick a column for the X axis.' };
@@ -128,7 +129,9 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
     // Busy series get a moving average so the trend shows through the noise.
     const window = points.length > 60 ? (unit === 'day' ? 7 : Math.max(3, Math.round(points.length / 20) | 1)) : 0;
     const smooth = window ? movingAverage(points, window) : null;
-    return { type, xLabel: xCol.name, yLabel: yCol ? `${agg} of ${yCol.name}` : 'Rows', xIsDate: xCol.type === 'date', unit, points, smooth, window };
+    // Optional forecast (date axis only): `forecast` is the number of periods to project.
+    const projection = forecast && xCol.type === 'date' ? forecastSeries(points, { unit, horizon: forecast }) : null;
+    return { type, xLabel: xCol.name, yLabel: yCol ? `${agg} of ${yCol.name}` : 'Rows', xIsDate: xCol.type === 'date', unit, points, smooth, window, forecast: projection };
   }
 
   if (type === 'box') {

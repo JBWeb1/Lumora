@@ -182,7 +182,7 @@ test('every lesson refers to real columns and glossary terms', () => {
     for (const t of lesson.terms) assert.ok(GLOSSARY[t], `${lesson.id}: unknown term ${t}`);
     const ds = datasetFromText(sampleCSV(lesson.try.sample), 'x.csv');
     const names = ds.columns.map((c) => c.name);
-    const refs = [lesson.try.chart?.x, lesson.try.chart?.y, lesson.try.summarize?.by, ...(lesson.try.summarize?.aggs ?? []).map((a) => a.column)];
+    const refs = [lesson.try.chart?.x, lesson.try.chart?.y, lesson.try.summarize?.by, lesson.try.summarize?.cols, ...(lesson.try.summarize?.aggs ?? []).map((a) => a.column)];
     for (const r of refs.filter(Boolean)) assert.ok(names.includes(r), `${lesson.id}: unknown column ${r}`);
     if (lesson.try.clean) {
       const { missingCol, formula, formulaName } = lesson.try.clean;

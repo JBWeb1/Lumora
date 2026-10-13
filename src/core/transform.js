@@ -1,7 +1,7 @@
 // Filtering, sorting, grouping, formatting and export.
 
 import { parseBoolean, parseDate, parseNumber } from './infer.js';
-import { isNum, mean, median, numbers, std, sum } from './stats.js';
+import { extent, isNum, mean, median, numbers, std, sum } from './stats.js';
 
 export const FILTER_OPS = {
   number: ['=', '≠', '>', '≥', '<', '≤', 'is missing', 'is not missing'],
@@ -111,8 +111,8 @@ export function aggregate(values, fn) {
     case 'sum': return sum(xs);
     case 'mean': return mean(xs);
     case 'median': return median(xs);
-    case 'min': return Math.min(...xs);
-    case 'max': return Math.max(...xs);
+    case 'min': return extent(xs)[0];
+    case 'max': return extent(xs)[1];
     case 'std': return xs.length > 1 ? std(xs) : null;
     default: throw new Error(`Unknown aggregation: ${fn}`);
   }
@@ -140,6 +140,17 @@ export function groupKey(col, v, dateUnit) {
   return v;
 }
 
+/** Natural order for group labels: weekdays Mon→Sun, dates and numbers ascending, categories biggest first. */
+function orderKeys(col, keys, sizeOf, dateUnit) {
+  if (col.type === 'date' && dateUnit === 'weekday') {
+    return keys.sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b));
+  }
+  if (col.type === 'date' || col.type === 'number') {
+    return keys.sort((a, b) => (a === '(missing)') - (b === '(missing)') || compareValues(a, b));
+  }
+  return keys.sort((a, b) => sizeOf(b) - sizeOf(a) || compareValues(a, b));
+}
+
 /**
  * Group rows and summarise them, like a pivot table.
  * Returns { headers, types, rows } where rows are arrays of plain values.
@@ -152,14 +163,7 @@ export function groupBy(dataset, indices, { by, dateUnit = 'month', aggs = [{ fn
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(i);
   }
-  const keys = [...groups.keys()];
-  if (col.type === 'date' && dateUnit === 'weekday') {
-    keys.sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b));
-  } else if (col.type === 'date' || col.type === 'number') {
-    keys.sort((a, b) => (a === '(missing)') - (b === '(missing)') || compareValues(a, b));
-  } else {
-    keys.sort((a, b) => groups.get(b).length - groups.get(a).length || compareValues(a, b));
-  }
+  const keys = orderKeys(col, [...groups.keys()], (k) => groups.get(k).length, dateUnit);
 
   const headers = [col.name + (col.type === 'date' ? ` (${dateUnit})` : '')];
   const types = [col.type === 'number' ? 'number' : 'category'];
@@ -226,4 +230,63 @@ export function toCSV(headers, rows) {
 export function datasetToCSV(dataset, indices) {
   const headers = dataset.columns.map((c) => c.name);
   return toCSV(headers, indices.map((i) => dataset.columns.map((c) => c.raw[i])));
+}
+
+/**
+ * Two-way pivot table: rows grouped by one column, columns by another, one summary per cell.
+ * Returns { rowLabel, colLabel, valueLabel, rowKeys, colKeys, cells[r][c], rowTotals, colTotals,
+ * grandTotal, hiddenColumns } — totals are computed from the underlying rows, so they are
+ * correct for averages and medians too (not just sums).
+ */
+export function pivotTable(dataset, indices, { rows, columns, rowUnit = 'month', colUnit = 'month', fn = 'count', column = null, maxColumns = 25 }) {
+  const rc = dataset.columns[rows];
+  const cc = dataset.columns[columns];
+  const vc = column == null ? null : dataset.columns[column];
+  const valueOf = (members) => aggregate(vc ? members.map((i) => vc.values[i]) : members, fn);
+  const byRow = new Map();
+  const byCol = new Map();
+  const cellMembers = new Map();
+  for (const i of indices) {
+    const rk = groupKey(rc, rc.values[i], rowUnit);
+    const ck = groupKey(cc, cc.values[i], colUnit);
+    if (!byRow.has(rk)) byRow.set(rk, []);
+    byRow.get(rk).push(i);
+    if (!byCol.has(ck)) byCol.set(ck, []);
+    byCol.get(ck).push(i);
+    const key = `${rk}\u0001${ck}`;
+    if (!cellMembers.has(key)) cellMembers.set(key, []);
+    cellMembers.get(key).push(i);
+  }
+  let colKeys = [...byCol.keys()];
+  let hiddenColumns = 0;
+  if (colKeys.length > maxColumns) {
+    hiddenColumns = colKeys.length - maxColumns;
+    colKeys = colKeys.sort((a, b) => byCol.get(b).length - byCol.get(a).length).slice(0, maxColumns);
+  }
+  colKeys = orderKeys(cc, colKeys, (k) => byCol.get(k).length, colUnit);
+  const rowKeys = orderKeys(rc, [...byRow.keys()], (k) => byRow.get(k).length, rowUnit);
+  const cells = rowKeys.map((rk) => colKeys.map((ck) => {
+    const m = cellMembers.get(`${rk}\u0001${ck}`);
+    return m ? valueOf(m) : null;
+  }));
+  return {
+    rowLabel: rc.name + (rc.type === 'date' ? ` (${rowUnit})` : ''),
+    colLabel: cc.name + (cc.type === 'date' ? ` (${colUnit})` : ''),
+    valueLabel: fn === 'count' ? 'Rows' : `${AGGREGATIONS[fn].label} of ${vc.name}`,
+    rowKeys: rowKeys.map(String),
+    colKeys: colKeys.map(String),
+    cells,
+    rowTotals: rowKeys.map((rk) => valueOf(byRow.get(rk))),
+    colTotals: colKeys.map((ck) => valueOf(byCol.get(ck))),
+    grandTotal: valueOf(indices),
+    hiddenColumns,
+  };
+}
+
+/** Flatten a pivot table into header + rows (for CSV / Excel export). */
+export function pivotToTable(p) {
+  const headers = [`${p.rowLabel} \\ ${p.colLabel}`, ...p.colKeys, 'Total'];
+  const rows = p.rowKeys.map((rk, r) => [rk, ...p.cells[r], p.rowTotals[r]]);
+  rows.push(['Total', ...p.colTotals, p.grandTotal]);
+  return { headers, rows };
 }

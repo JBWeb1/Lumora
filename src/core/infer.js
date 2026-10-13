@@ -122,14 +122,16 @@ function uniqueNames(headers, width) {
 }
 
 /** Build a column-oriented dataset from a header row and string rows. */
-export function buildDataset(name, headers, rows) {
+export function buildDataset(name, headers, rows, onProgress) {
   let width = headers.length;
   for (const r of rows) if (r.length > width) width = r.length;
   const names = uniqueNames(headers, width);
   const columns = names.map((colName, j) => {
     const raw = rows.map((r) => r[j] ?? '');
     const type = inferType(raw);
-    return { name: colName, type, inferredType: type, raw, values: convertValues(raw, type) };
+    const column = { name: colName, type, inferredType: type, raw, values: convertValues(raw, type) };
+    onProgress?.((j + 1) / width);
+    return column;
   });
   return { name, rowCount: rows.length, columns };
 }
@@ -142,15 +144,21 @@ export function setColumnType(dataset, columnIndex, type) {
   return col;
 }
 
-/** Load a dataset from file text. Supports CSV, TSV, TXT and JSON. */
-export function datasetFromText(text, fileName = 'data.csv') {
+/**
+ * Load a dataset from file text. Supports CSV, TSV, TXT and JSON.
+ * `onProgress(stage, fraction)` reports 'parsing' then 'columns' (used by the background loader).
+ */
+export function datasetFromText(text, fileName = 'data.csv', onProgress) {
   const name = fileName.replace(/\.[^.]+$/, '') || 'data';
   const trimmed = text.trimStart();
+  const columnsProgress = onProgress && ((f) => onProgress('columns', f));
   if (/\.json$/i.test(fileName) || trimmed.startsWith('[') || trimmed.startsWith('{')) {
     const { headers, rows } = rowsFromJSON(JSON.parse(text));
-    return buildDataset(name, headers, rows);
+    return buildDataset(name, headers, rows, columnsProgress);
   }
-  const all = parseCSV(text, /\.tsv$/i.test(fileName) ? '\t' : undefined);
+  const all = parseCSV(text, /\.tsv$/i.test(fileName) ? '\t' : undefined, onProgress && ((f) => onProgress('parsing', f)));
   if (!all.length) throw new Error('The file is empty.');
-  return buildDataset(name, all[0], all.slice(1));
+  const header = all[0];
+  all[0] = null; // let the header row be collected; avoids copying millions of rows with slice(1)
+  return buildDataset(name, header, all.slice(1), columnsProgress);
 }

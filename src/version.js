@@ -1,10 +1,21 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '0.5.0',
+    date: '2026-10-13',
+    items: [
+      'Combine files: stack files with the same columns (e.g. monthly sales), or add columns from another file by matching a shared column. Drop several files at once to stack them.',
+      'Two-way pivot tables: split any summary by a second column, e.g. weekday × month, with shading and totals.',
+      'Forecasts on date charts: see the next weeks or months with a shaded likely range, and how accurate the forecast was on past data.',
+      'Big files load in the background with a progress bar; files with millions of rows no longer freeze the page.',
+      'Export to Excel: data, summaries, pivot tables and charts, with real editable Excel charts.',
+    ],
+  },
   {
     version: '0.4.0',
     date: '2026-10-10',

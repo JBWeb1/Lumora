@@ -148,3 +148,14 @@ test('ask and drivers lessons point at real questions and columns', () => {
   }
   for (const key of ['ask', 'drivers', 'report']) assert.ok(GLOSSARY[key], key);
 });
+
+test('ask: forecast questions become a line chart with a forecast', () => {
+  for (const q of ['forecast revenue', 'predict iced drinks next month', 'what will customers be next week']) {
+    const r = ask(coffee, q).result;
+    assert.equal(r.type, 'chart', q);
+    assert.equal(r.chart.type, 'line');
+    assert.equal(r.chart.x, col(coffee, 'date'));
+    assert.equal(r.chart.forecast, 'default');
+  }
+  assert.equal(ask(students, 'what predicts exam score').result.type, 'drivers', 'drivers questions are not forecasts');
+});

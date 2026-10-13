@@ -38,48 +38,82 @@ export function detectDelimiter(text) {
   return best;
 }
 
-/** Parse delimited text into an array of rows (arrays of strings). Blank lines are dropped. */
-export function parseCSV(text, delimiter) {
+/**
+ * Parse delimited text into an array of rows (arrays of strings). Blank lines are dropped.
+ * Fields are sliced out whole instead of built character by character, which keeps
+ * multi-hundred-megabyte files fast. `onProgress(fraction)` is called about once per MB.
+ */
+export function parseCSV(text, delimiter, onProgress) {
   text = stripBom(text);
   delimiter = delimiter || detectDelimiter(text);
+  const D = delimiter.charCodeAt(0);
+  const QUOTE = 34;
+  const LF = 10;
+  const CR = 13;
+  const n = text.length;
   const rows = [];
   let row = [];
-  let field = '';
-  let inQuotes = false;
-  const n = text.length;
+  let i = 0;
+  let nextReport = 1 << 20;
+  const fieldEnd = (k) => {
+    while (k < n) {
+      const c = text.charCodeAt(k);
+      if (c === D || c === LF || c === CR) break;
+      k++;
+    }
+    return k;
+  };
 
-  for (let i = 0; i < n; i++) {
-    const ch = text[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        if (text[i + 1] === '"') {
-          field += '"';
-          i++;
-        } else {
-          inQuotes = false;
+  while (i < n) {
+    let field;
+    if (text.charCodeAt(i) === QUOTE) {
+      // Quoted field: may contain delimiters, newlines and doubled "" quotes.
+      i++;
+      let start = i;
+      field = '';
+      for (;;) {
+        const j = text.indexOf('"', i);
+        if (j < 0) {
+          field += text.slice(start);
+          i = n;
+          break;
         }
-      } else {
-        field += ch;
+        if (text.charCodeAt(j + 1) === QUOTE) {
+          field += text.slice(start, j + 1);
+          i = j + 2;
+          start = i;
+          continue;
+        }
+        field += text.slice(start, j);
+        i = j + 1;
+        break;
       }
-    } else if (ch === '"' && field === '') {
-      inQuotes = true;
-    } else if (ch === delimiter) {
-      row.push(field);
-      field = '';
-    } else if (ch === '\n' || ch === '\r') {
-      row.push(field);
-      rows.push(row);
-      row = [];
-      field = '';
-      if (ch === '\r' && text[i + 1] === '\n') i++;
+      // Anything between the closing quote and the next delimiter is kept, like before.
+      const k = fieldEnd(i);
+      if (k > i) field += text.slice(i, k);
+      i = k;
     } else {
-      field += ch;
+      const k = fieldEnd(i);
+      field = text.slice(i, k);
+      i = k;
+    }
+    row.push(field);
+    if (i >= n) break;
+    const c = text.charCodeAt(i);
+    i++;
+    if (c === D) {
+      if (i >= n) row.push('');
+      continue;
+    }
+    if (c === CR && text.charCodeAt(i) === LF) i++;
+    rows.push(row);
+    row = [];
+    if (onProgress && i >= nextReport) {
+      onProgress(i / n);
+      nextReport = i + (1 << 20);
     }
   }
-  if (field !== '' || row.length) {
-    row.push(field);
-    rows.push(row);
-  }
+  if (row.length) rows.push(row);
   return rows.filter((r) => !(r.length === 1 && r[0].trim() === ''));
 }
 

@@ -166,7 +166,8 @@ export async function readXlsx(buffer) {
     if (!xml) continue;
     const grid = parseSheet(xml, shared, dates);
     if (!grid.length) continue;
-    const width = Math.max(...grid.map((r) => r.length));
+    let width = 0;
+    for (const r of grid) if (r.length > width) width = r.length;
     const [headers, ...rows] = grid.map((r) => Array.from({ length: width }, (_, i) => r[i] ?? ''));
     sheets.push({ name: a.name, headers, rows });
   }

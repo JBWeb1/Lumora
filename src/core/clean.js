@@ -4,6 +4,7 @@
 import { convertValues, inferType, isMissingRaw, TYPES } from './infer.js';
 import { applyFilters } from './transform.js';
 import { evaluateFormula } from './formula.js';
+import { appendRows, joinColumns } from './combine.js';
 import { frequencies, mean, median, numbers } from './stats.js';
 
 export class StepError extends Error {}
@@ -147,6 +148,10 @@ export function applyStep(ds, step) {
       const raw = results.map((v) => toRaw(v, type));
       return { ...ds, columns: [...ds.columns, makeColumn(name, raw, type)] };
     }
+    case 'append':
+      return appendRows(ds, step.data, { sourceColumn: step.sourceColumn ?? null, baseLabel: step.baseLabel ?? ds.name, otherLabel: step.data.name });
+    case 'join':
+      return joinColumns(ds, step.data, { leftKey: step.leftKey, rightKey: step.rightKey, how: step.how ?? 'left' });
     case 'keepRows': {
       const filters = step.filters.map((f) => ({ ...f, column: indexOf(ds, f.column) }));
       return subsetRows(ds, applyFilters(ds, filters));
@@ -175,6 +180,8 @@ export function describeStep(step) {
     case 'setType': return `Treat ${step.column} as ${step.type}`;
     case 'text': return `${TEXT_LABELS[step.transform]} ${step.column}`;
     case 'formula': return `New column ${step.name} = ${step.formula}`;
+    case 'append': return `Add ${step.data.rows.length.toLocaleString('en-US')} rows from ${step.data.name}`;
+    case 'join': return `Add columns from ${step.data.name} matched on ${step.leftKey}${step.leftKey === step.rightKey ? '' : ` = ${step.rightKey}`} (${{ left: 'keep all rows', inner: 'only matches', full: 'all rows from both' }[step.how ?? 'left']})`;
     case 'keepRows': return `Keep only rows where ${step.filters.map((f) => `${f.column} ${f.op}${f.value != null && f.value !== '' ? ` ${f.value}` : ''}`).join(' and ')}`;
     default: return step.op;
   }

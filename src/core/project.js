@@ -12,7 +12,7 @@ export const PROJECT_SCHEMA = 1;
  * Build a plain JSON-safe project object.
  * `view` holds UI settings with column references already converted to names.
  */
-export function serializeProject({ id, original, steps, view, report, appVersion }) {
+export function serializeProject({ id, original, steps, view, report, appVersion, includeData = true }) {
   return {
     format: PROJECT_FORMAT,
     schema: PROJECT_SCHEMA,
@@ -21,7 +21,7 @@ export function serializeProject({ id, original, steps, view, report, appVersion
     name: original.name,
     savedAt: new Date().toISOString(),
     rowCount: original.rowCount,
-    data: { headers: original.columns.map((c) => c.name), rows: Array.from({ length: original.rowCount }, (_, i) => original.columns.map((c) => c.raw[i])) },
+    data: includeData ? { headers: original.columns.map((c) => c.name), rows: Array.from({ length: original.rowCount }, (_, i) => original.columns.map((c) => c.raw[i])) } : undefined,
     steps,
     view,
     report,
@@ -64,7 +64,7 @@ export function deserializeProject(json) {
 
 /** Short summary for the "Recent work" list. */
 export function projectSummary(json) {
-  return { id: json.id, name: json.name, savedAt: json.savedAt, rowCount: json.rowCount, steps: json.steps?.length ?? 0, reportItems: json.report?.length ?? 0 };
+  return { id: json.id, name: json.name, savedAt: json.savedAt, rowCount: json.rowCount, steps: json.stepCount ?? json.steps?.length ?? 0, reportItems: json.report?.length ?? 0 };
 }
 
 export function newProjectId() {

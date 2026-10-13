@@ -6,7 +6,7 @@
 // told an update is ready and switches over (immediately when idle, or when the user
 // agrees if they have work open). Old caches are deleted afterwards.
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const CACHE = `lumora-${VERSION}`;
 
 // Everything the app needs to run offline. `npm test` checks this list is complete.
@@ -21,24 +21,31 @@ const APP_FILES = [
   './assets/logo-512.png',
   './src/app.js',
   './src/version.js',
+  './src/worker.js',
   './src/core/ask.js',
   './src/core/chartspec.js',
   './src/core/clean.js',
+  './src/core/combine.js',
   './src/core/csv.js',
   './src/core/drivers.js',
+  './src/core/forecast.js',
   './src/core/formula.js',
   './src/core/infer.js',
   './src/core/insights.js',
   './src/core/learn.js',
+  './src/core/overview.js',
+  './src/core/pack.js',
   './src/core/project.js',
   './src/core/samples.js',
   './src/core/significance.js',
   './src/core/stats.js',
   './src/core/transform.js',
   './src/core/xlsx.js',
+  './src/core/xlsxwrite.js',
   './src/ui/charts.js',
   './src/ui/dom.js',
   './src/ui/export.js',
+  './src/ui/loader.js',
   './src/ui/storage.js',
   './src/ui/updates.js',
 ];

@@ -201,6 +201,12 @@ export function parseQuestion(question, dataset) {
   const describeFilters = () => (filters.length ? ` where ${filters.map((f) => `${name(f.column)} ${f.op} ${f.value}`).join(' and ')}` : '');
   const done = (result, understood) => ({ understood: understood + describeFilters(), filters, result });
 
+  // Forecasts: "forecast revenue", "predict sales next month", "what will customers be next week"
+  const dateColumn = cols.findIndex((c) => c.type === 'date');
+  if (dateColumn >= 0 && /\b(forecast\w*|predict|prediction|projection|project|next (week|month|year|quarter)|what will)\b/.test(q) && !/\bwhat (predicts|drives)\b/.test(q)) {
+    return done({ type: 'chart', chart: { type: 'line', x: dateColumn, y: nums[0] ?? null, forecast: 'default' } }, `Forecast of ${nums.length ? name(nums[0]) : 'the number of rows'} over time`);
+  }
+
   // What drives X?
   if (/\b(what )?(drives|affects|influences|predicts|explains|impacts)\b|\bdrivers? (of|for)\b|\bfactors\b/.test(q) && unique.length >= 1) {
     const target = unique.find((i) => cols[i].type === 'number') ?? unique[0];

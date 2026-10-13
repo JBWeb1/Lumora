@@ -8,7 +8,11 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 
 ## Features
 
-- **Instant loading.** Drag and drop (or paste) **Excel (.xlsx)**, CSV, TSV or JSON. Workbooks with several sheets ask which sheet to open. Lumora detects the delimiter and works out each column's type: number, date, yes/no, category or text. You can override any type with one click.
+- **Instant loading, even for big files.** Drag and drop (or paste) **Excel (.xlsx)**, CSV, TSV or JSON. Workbooks with several sheets ask which sheet to open. Files are read in a background worker with a progress bar, so files with millions of rows don't freeze the page. A 1-million-row CSV (38 MB) loads in about 12 seconds, with the page responsive throughout. On very large data, the Overview's insights and Key drivers use an evenly spread sample, and say so. Counts, filters, tables, summaries and exports always use every row.
+- **Combine files.** Drop several files with the same columns at once to stack them, with a "source" column recording which file each row came from. Or use Clean → *Combine with another file* to stack rows or **join columns** on a shared column (orders + customers). Lumora suggests the matching columns, previews how many rows match, and warns about duplicates before you commit. Like every cleaning step, it can be undone.
+- **Two-way pivot tables.** In Summarize, choose *Split into columns by* to get, for example, average customers by weekday × month, with heat-map shading and correct totals.
+- **Forecasts.** On any line chart over dates, turn on *Forecast* to project the next days or months with a shaded 80% likely range. It uses Holt-Winters smoothing with weekly or yearly patterns, and a back-test that says how accurate it was on past data. Ask "forecast revenue" also works.
+- **Export to Excel.** Data, summaries, pivot tables and charts export as real `.xlsx` files: typed cells (numbers, dates, yes/no), a bold, filterable, frozen header row, and **native, editable Excel charts** next to the data. Lumora detects the delimiter and works out each column's type: number, date, yes/no, category or text. You can override any type with one click.
 - **Ask questions in plain English.** For example "which weekday has the most customers", "total revenue on rainy days", "exam score over time" or "what drives exam score". You get a one-line answer, a table and a chart. Lumora always shows how it understood the question, so you can check it. It runs fully on-device, with no AI service and no data sent anywhere. Press `/` to ask from anywhere.
 - **Key drivers.** Pick a column and see every other column ranked by how much of its variation it explains, with plain-English explanations and a reminder that related does not mean caused.
 - **Reports.** Pin charts, summaries, answers and key drivers, add notes, reorder them, then print or save as PDF. Report items stay live, so they update when the data is cleaned and follow renamed columns.
@@ -23,7 +27,7 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 - **Filters** that apply everywhere: overview, table, charts and summaries.
 - **Group & summarize** (pivot tables) with count, sum, mean, median, min, max, standard deviation and distinct counts. Dates can be grouped by day, month, year or weekday.
 - **Searchable, sortable table** and **CSV export** of filtered data and summaries.
-- **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **ten guided lessons** use built-in practice datasets.
+- **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **twelve guided lessons** use built-in practice datasets.
 - **Self-updating.** New versions download in the background and install automatically. If you have data open, Lumora asks first so nothing is lost. A "What's new" note appears after each update. It also works offline and can be installed as an app.
 - Light and dark themes, a layout that works on phones, and no dependencies.
 
@@ -58,7 +62,8 @@ During development (`npm start` on localhost) the service worker is off, so edit
 ```
 index.html, styles.css    App shell and design system (brand colours from the logo)
 assets/                   Logo in several sizes (favicon, app icon)
-src/app.js                UI: home, overview, table, chart, summarize, clean, learn
+src/app.js                UI: home, overview, table, chart, summarize, drivers, clean, report, learn
+src/worker.js             background file loader (Web Worker)
 src/version.js            app version and user-facing changelog
 sw.js, manifest.webmanifest  offline cache, self-updating, installable app
 src/ui/                   DOM helpers, SVG charts, chart export, update handling, project storage
@@ -75,6 +80,11 @@ src/core/                 Pure, tested logic (no DOM):
   formula.js                safe formula parser/evaluator for calculated columns
   significance.js           t-test, ANOVA, chi-square, correlation test + verdicts
   xlsx.js                   dependency-free Excel reader
+  xlsxwrite.js              dependency-free Excel writer with native charts
+  combine.js                stack (append) and join datasets
+  forecast.js               Holt-Winters forecasting with prediction intervals and back-test
+  overview.js               Overview numbers (shared by the page and the worker)
+  pack.js                   fast hand-off of datasets between worker and page
   chartspec.js              chart suggestion and chart data preparation
   learn.js                  glossary and guided lessons
   samples.js                deterministic practice datasets
@@ -84,8 +94,7 @@ tests/                    node:test unit tests
 ## Roadmap ideas
 
 1. **Optional AI assistant** for open-ended questions the on-device parser can't handle (opt-in, with clear notice before any data leaves the device).
-2. **Simple forecasting** and multiple regression.
+2. **Multiple regression** ("what explains sales, all factors together?").
 3. **Share a report as a link.**
 4. **Connections** to Google Sheets and databases.
-5. **Web Worker processing** for files with millions of rows.
-6. **Progress tracking** for lessons, plus quizzes and achievements.
+5. **Progress tracking** for lessons, plus quizzes and achievements.
