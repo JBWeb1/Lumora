@@ -1,5 +1,7 @@
 // Tiny DOM helpers. All text goes through text nodes, so data can never inject HTML.
 
+import { isNativeApp, saveFileNative } from './native.js';
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const PROPERTIES = new Set(['value', 'checked', 'selected', 'disabled', 'hidden', 'open']);
 
@@ -57,6 +59,10 @@ export function select(options, value, onChange, props = {}) {
 
 export function download(fileName, text, type = 'text/csv') {
   const blob = text instanceof Blob ? text : new Blob([text], { type });
+  if (isNativeApp()) {
+    saveFileNative(fileName, blob).catch((err) => alert(`Couldn't save ${fileName}: ${err?.message ?? err}`));
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = el('a', { href: url, download: fileName });
   document.body.append(a);

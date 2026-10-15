@@ -40,6 +40,12 @@ npm test         # unit tests (Node 18+)
 
 There is no build step. Any static host (GitHub Pages, Netlify, …) can serve the repository as is. Add `?sample=coffee` or `?sample=students` to the URL to open with practice data.
 
+## Install it as an app
+
+Lumora installs as an app on Android (APK), Windows, Mac and Linux, and from the browser. GitHub
+builds the files automatically. See [apps/README.md](apps/README.md) for downloads, install steps
+and signing.
+
 ## Updates and releases
 
 Lumora is a Progressive Web App. `sw.js` (a service worker) keeps a complete copy of the current version for offline use. The browser re-checks it on every visit, every 30 minutes, and when you click **Check for updates**. When a new version is published:

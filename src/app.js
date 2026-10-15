@@ -25,6 +25,7 @@ import { loadFileInBackground } from './ui/loader.js';
 import { matchColumns, previewJoin, rawTable, suggestJoinKeys } from './core/combine.js';
 import { DEFAULT_HORIZON, HORIZONS } from './core/forecast.js';
 import { EXCEL_MAX_ROWS, datasetSheet, writeXlsx } from './core/xlsxwrite.js';
+import { isNativeApp } from './ui/native.js';
 
 // ---------- state ----------
 
@@ -90,6 +91,15 @@ const $dialog = document.getElementById('dialog');
 const cols = () => state.dataset.columns;
 const colIndex = (name) => cols().findIndex((c) => c.name === name);
 const plural = (n, word) => `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
+
+/** Android's in-app browser has no print dialog, so say so instead of silently doing nothing. */
+function printReport() {
+  if (isNativeApp()) {
+    alert('Printing isn\'t available in the Android app yet. Open Lumora in Chrome or on a computer to print or save the report as a PDF.');
+    return;
+  }
+  window.print();
+}
 
 function toast(message, kind = 'error') {
   document.querySelectorAll('.toast').forEach((old) => old.remove());
@@ -1713,7 +1723,7 @@ function renderReport() {
         el('p', { class: 'muted small report-meta' }, `${plural(state.dataset.rowCount, 'row')} · ${formatDate(Date.now())}${state.steps.length ? ` · ${plural(state.steps.length, 'cleaning step')}` : ''}`)),
       el('div', { class: 'report-actions' },
         el('button', { class: 'btn small', type: 'button', onclick: () => pin({ kind: 'text', title: 'Notes' }) }, '+ Add text'),
-        el('button', { class: 'btn small primary', type: 'button', disabled: !state.report.length, onclick: () => window.print() }, '🖨 Print / Save as PDF'))),
+        el('button', { class: 'btn small primary', type: 'button', disabled: !state.report.length, onclick: printReport }, '🖨 Print / Save as PDF'))),
     state.report.length
       ? state.report.map(renderReportItem)
       : el('div', { class: 'card empty report-empty' },

@@ -1,0 +1,9 @@
+{
+  "appId": "io.github.jbweb1.lumora",
+  "appName": "Lumora",
+  "webDir": "www",
+  "backgroundColor": "#011132",
+  "android": {
+    "allowMixedContent": false
+  }
+}

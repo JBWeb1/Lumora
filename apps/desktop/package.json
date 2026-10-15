@@ -1,0 +1,33 @@
+{
+  "name": "lumora-desktop",
+  "productName": "Lumora",
+  "version": "0.6.0",
+  "description": "Lumora: friendly data analysis that runs on your computer.",
+  "author": { "name": "Lumora", "email": "lumora@users.noreply.github.com" },
+  "homepage": "https://github.com/JBWeb1/Lumora",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "web": "node ../copy-web.mjs www",
+    "start": "npm run web && electron .",
+    "dist": "npm run web && electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "^44.7.2",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "io.github.jbweb1.lumora",
+    "productName": "Lumora",
+    "artifactName": "Lumora-${version}-${os}-${arch}.${ext}",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.cjs", "www/**/*"],
+    "fileAssociations": [
+      { "ext": "lumora", "name": "Lumora project", "role": "Editor" }
+    ],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "build/icon.png" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "perMachine": false },
+    "mac": { "target": [{ "target": "dmg", "arch": ["universal"] }], "category": "public.app-category.productivity", "icon": "build/icon.png" },
+    "linux": { "target": ["AppImage", "deb"], "category": "Office", "icon": "build/icon.png", "maintainer": "Lumora <lumora@users.noreply.github.com>" }
+  }
+}

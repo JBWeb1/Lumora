@@ -1,10 +1,18 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '0.6.0',
+    date: '2026-10-15',
+    items: [
+      'Lumora now comes as an app: an Android APK for phones and tablets, and installers for Windows, Mac and Linux. They work fully offline.',
+      'In the Android app, exports open the share sheet so you can save files to your phone, Drive or email.',
+    ],
+  },
   {
     version: '0.5.0',
     date: '2026-10-13',

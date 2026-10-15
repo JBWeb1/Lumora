@@ -1,3 +1,6 @@
 node_modules/
 .DS_Store
 *.log
+# App packaging output (see apps/README.md)
+apps/*/www/
+apps/desktop/dist/

@@ -25,6 +25,7 @@ test('every version number agrees (a release must bump all of them)', () => {
   assert.equal(VERSION, pkg, 'src/version.js vs package.json');
   assert.equal(swVersion, pkg, 'sw.js vs package.json: installed copies only update when sw.js changes');
   assert.equal(CHANGELOG[0].version, pkg, 'add release notes for the new version to src/version.js');
+  assert.equal(JSON.parse(read('apps/desktop/package.json')).version, pkg, 'apps/desktop/package.json vs package.json: names the desktop installers');
 });
 
 test('changelog is newest-first with unique versions and notes', () => {
