@@ -287,6 +287,8 @@ body.dragging .drop-overlay { display: grid; }
 @media (max-width: 640px) {
   .topbar { padding: 10px 16px; gap: 8px; flex-wrap: wrap; }
   .switch span:last-child { display: none; }
+  .top-actions { gap: 6px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+  .palette-btn { padding-inline: 0.55em; }
   main { padding: 16px 16px 60px; }
   .insights { grid-template-columns: 1fr; }
   .kpi.wide { grid-column: auto; }
@@ -493,3 +495,47 @@ body.dragging .drop-overlay { display: grid; }
 .join-types legend { font-weight: 650; padding: 0 6px; }
 .join-preview { background: var(--surface-2); border-radius: 10px; padding: 10px 14px; }
 .join-preview p { margin: 4px 0; }
+
+/* ---------- data health, recipes, command palette (v0.7) ---------- */
+.grow { flex: 1; min-width: 0; }
+.score { flex: none; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 0.95rem; background: var(--surface-2); color: var(--muted); border: 3px solid var(--border); }
+.score.good { color: var(--good); border-color: var(--good); }
+.score.ok { color: var(--accent); border-color: var(--accent); }
+.score.poor { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.health-banner, .recipe-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; box-shadow: var(--shadow); margin-bottom: 12px; }
+.health-banner.poor { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.recipe-banner { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.recipe-banner .insight-icon { background: var(--accent-soft); color: var(--accent); }
+.recipe-banner p { margin: 2px 0 0; }
+.banner-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.health-head { display: flex; gap: 12px; align-items: center; }
+.health-head h3, .health-head p { margin: 0; }
+.issue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.issue { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+.issue p { margin: 2px 0 0; }
+.sev-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); align-self: flex-start; margin-top: 6px; }
+.sev-high .sev-dot { background: var(--warn); }
+.sev-medium .sev-dot { background: var(--accent); }
+.clean-group { font-size: 1rem; margin: 10px 0 0; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.step-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.step-x { flex: none; border: none; background: none; color: var(--muted); cursor: pointer; border-radius: 6px; width: 22px; height: 22px; }
+.step-x:hover { background: var(--warn-soft); color: var(--warn); }
+.recipe-head { margin-top: 8px !important; }
+input.narrow { width: 5.5em; }
+.palette-btn kbd, .palette-hint kbd { font: inherit; font-size: 0.72rem; border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; color: var(--muted); }
+dialog.palette { width: min(600px, calc(100vw - 32px)); margin-top: 12vh; padding: 0; }
+.palette-input { width: 100%; border: none; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); font-size: 1.05rem; padding: 16px 18px; outline: none; }
+.palette-list { list-style: none; margin: 0; padding: 6px; max-height: min(420px, 55vh); overflow-y: auto; }
+.palette-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.palette-item.active { background: var(--accent-soft); }
+.palette-icon { width: 22px; text-align: center; color: var(--accent); flex: none; }
+.palette-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-group { font-size: 0.78rem; color: var(--muted); flex: none; }
+.palette-empty { padding: 14px; color: var(--muted); }
+.palette-hint { padding: 8px 16px 12px; border-top: 1px solid var(--border); }
+@media (max-width: 720px) {
+  .palette-btn kbd, .palette-label { display: none; }
+  .issue { flex-wrap: wrap; }
+  .issue .btn { margin-left: 20px; }
+}
+@media print { .health-banner, .recipe-banner { display: none; } }

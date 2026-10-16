@@ -1,5 +1,5 @@
 import { buildDataset, datasetFromText, TYPES } from './core/infer.js';
-import { applyStep, describeStep, duplicateRows, runRecipe } from './core/clean.js';
+import { applyStep, DATE_PARTS, describeStep, duplicateRows, niceBinSize, runRecipe, splitCount, uniqueName } from './core/clean.js';
 import { FUNCTIONS, evaluateFormula } from './core/formula.js';
 import { testColumns } from './core/significance.js';
 import { readXlsx } from './core/xlsx.js';
@@ -26,6 +26,9 @@ import { matchColumns, previewJoin, rawTable, suggestJoinKeys } from './core/com
 import { DEFAULT_HORIZON, HORIZONS } from './core/forecast.js';
 import { EXCEL_MAX_ROWS, datasetSheet, writeXlsx } from './core/xlsxwrite.js';
 import { isNativeApp } from './ui/native.js';
+import { healthCheck, healthScore } from './core/health.js';
+import { isPortable, isRecipe, makeRecipe, recipeFits, recipeSteps } from './core/recipe.js';
+import { rankCommands } from './core/palette.js';
 
 // ---------- state ----------
 
@@ -63,6 +66,7 @@ const state = {
   report: [], // pinned charts, summaries, answers and notes (column references by name)
   ask: { question: '', parsed: null },
   drivers: { target: null },
+  recipeOffer: null, // a saved cleaning recipe that fits the file just opened
 };
 
 let indices = [];
@@ -163,6 +167,21 @@ function sampleNote(limit = SAMPLE_LIMIT) {
   return indices.length > limit && el('p', { class: 'sample-note' }, `ⓘ Large dataset: the analyses in this view use an evenly spread sample of ${limit.toLocaleString('en-US')} of the ${indices.length.toLocaleString('en-US')} rows. Counts, missing values, filters, tables, summaries and exports always use every row.`);
 }
 
+// Results that depend only on the data (not on filters), remembered per dataset version.
+const datasetMemo = new WeakMap();
+function perDataset(key, fn) {
+  const ds = state.dataset;
+  let m = datasetMemo.get(ds);
+  if (!m) datasetMemo.set(ds, (m = new Map()));
+  if (!m.has(key)) m.set(key, fn());
+  return m.get(key);
+}
+
+/** Above this many cells the health check waits for a click, so opening a huge file stays instant. */
+const HEALTH_AUTO_CELLS = 2_000_000;
+const healthIssues = () => perDataset('health', () => healthCheck(state.dataset));
+const healthReady = () => datasetMemo.get(state.dataset)?.has('health') || state.dataset.rowCount * cols().length <= HEALTH_AUTO_CELLS;
+
 function recompute() {
   indices = state.dataset ? applyFilters(state.dataset, state.filters) : [];
 }
@@ -203,6 +222,8 @@ function loadDataset(ds, overview = null) {
   state.drivers = { target: null };
   store.set('openProject', state.projectId);
   warnedTooBig = false;
+  const recipe = store.get('lastRecipe', null);
+  state.recipeOffer = isRecipe(recipe) && recipeFits(recipe, ds).fits ? recipe : null;
   chooseDefaults();
   state.tab = 'overview';
   recompute();
@@ -222,6 +243,11 @@ function loadText(text, fileName) {
       }
       if (isProject(json)) {
         openProject(json, { imported: true });
+        return true;
+      }
+      if (isRecipe(json)) {
+        if (state.dataset) applyRecipe(json);
+        else toast('That’s a cleaning recipe. Open a data file first, then apply it from the Clean tab.', 'info');
         return true;
       }
     }
@@ -404,7 +430,13 @@ async function loadFiles(fileList) {
 
 function loadSample(id) {
   const sample = SAMPLES.find((s) => s.id === id);
-  return loadText(sampleCSV(id), `${sample.name}.csv`);
+  const ok = loadText(sampleCSV(id), `${sample.name}.csv`);
+  // Practice data never offers your own cleaning recipes.
+  if (ok && state.recipeOffer) {
+    state.recipeOffer = null;
+    render();
+  }
+  return ok;
 }
 
 function runLesson(lesson) {
@@ -556,6 +588,8 @@ function renderOverview() {
   const { missing, insights } = ov;
 
   return el('div', { class: 'overview' },
+    recipeBanner(),
+    healthBanner(),
     renderAsk(),
     el('div', { class: 'kpis' },
       kpi('Rows', indices.length.toLocaleString('en-US')),
@@ -1043,18 +1077,21 @@ function restoreRefs(refs, renames) {
   state.drivers.target = idx(refs.target);
 }
 
-function setSteps(steps, renames = {}) {
+function setSteps(steps, renames = {}, explain = (message) => message) {
   let ds;
   try {
     ds = runRecipe(state.original, steps);
   } catch (err) {
-    toast(err.message);
+    toast(explain(err.message));
     return false;
   }
   const refs = snapshotRefs();
   state.steps = steps;
   state.dataset = ds;
   state.addingFilter = null;
+  state.recipeOffer = null;
+  // Remember the cleaning so the next file with the same columns can reuse it in one click.
+  if (steps.some(isPortable)) store.set('lastRecipe', makeRecipe(steps, state.original.name, state.original));
   state.ask = { question: state.ask.question, parsed: null };
   restoreRefs(refs, renames);
   update();
@@ -1112,7 +1149,8 @@ function renderClean() {
   const pick = (key, fallback) => (names.includes(f[key]) ? f[key] : (f[key] = fallback));
   const missingCounts = new Map(c.map((col) => [col.name, col.values.reduce((n, v) => n + (v == null), 0)]));
   const withMissing = names.filter((n) => missingCounts.get(n) > 0);
-  const dupCount = duplicateRows(ds).length;
+  const dupBy = names.includes(f.dupBy) ? f.dupBy : '';
+  const dupCount = perDataset(`dups:${dupBy}`, () => duplicateRows(ds, dupBy ? [dupBy] : null).length);
 
   // Missing values
   const missingCol = pick('missingCol', withMissing[0] ?? names[0]);
@@ -1141,8 +1179,13 @@ function renderClean() {
 
   // Duplicates
   const dupCard = actionCard('Duplicate rows', 'cleaning',
-    dupCount ? `${plural(dupCount, 'row')} ${dupCount === 1 ? 'is an exact copy' : 'are exact copies'} of an earlier row.` : 'No duplicate rows found.',
-    el('button', { class: 'btn primary small', type: 'button', disabled: !dupCount, onclick: () => addStep({ op: 'removeDuplicates' }) }, 'Remove duplicates'));
+    dupBy
+      ? (dupCount ? `${plural(dupCount, 'row')} repeat${dupCount === 1 ? 's' : ''} a ${dupBy} that appears earlier (ignoring capitals and spaces). Removing keeps the first one.` : `Every ${dupBy} is unique.`)
+      : (dupCount ? `${plural(dupCount, 'row')} ${dupCount === 1 ? 'is an exact copy' : 'are exact copies'} of an earlier row.` : 'No duplicate rows found.'),
+    el('div', { class: 'form-row' },
+      el('label', { class: 'muted small' }, 'Compare'),
+      select([{ value: '', label: 'every column' }, ...names.map((n) => ({ value: n, label: `only ${n}` }))], dupBy, (v) => { f.dupBy = v; render(); }, { 'aria-label': 'Columns to compare' }),
+      el('button', { class: 'btn primary small', type: 'button', disabled: !dupCount, onclick: () => addStep(dupBy ? { op: 'removeDuplicates', columns: [dupBy] } : { op: 'removeDuplicates' }) }, 'Remove duplicates')));
 
   // Calculated column
   const preview = el('div', { class: 'formula-preview' });
@@ -1221,18 +1264,257 @@ function renderClean() {
     el('h3', {}, 'Steps'),
     el('p', { class: 'muted small' }, `Original: ${plural(state.original.rowCount, 'row')} × ${plural(state.original.columns.length, 'column')}. Your file is never changed.`),
     state.steps.length
-      ? el('ol', { class: 'step-list' }, state.steps.map((s) => el('li', {}, describeStep(s))))
+      ? el('ol', { class: 'step-list' }, state.steps.map((s, k) => el('li', {},
+        el('span', {}, describeStep(s)),
+        el('button', { class: 'step-x', type: 'button', title: 'Remove this step', 'aria-label': `Remove step: ${describeStep(s)}`, onclick: () => removeStep(k) }, '✕'))))
       : el('p', { class: 'muted' }, 'No changes yet. Each action you apply appears here.'),
     el('p', { class: 'small' }, `Now: ${plural(ds.rowCount, 'row')} × ${plural(c.length, 'column')}`),
     el('div', { class: 'history-actions' },
       el('button', { class: 'btn small', type: 'button', disabled: !state.steps.length, title: 'Ctrl+Z', onclick: undo }, '↶ Undo last'),
       el('button', { class: 'btn ghost small', type: 'button', disabled: !state.steps.length, onclick: () => { if (confirm('Remove all cleaning steps and go back to the original data?')) setSteps([]); } }, 'Start over'),
       el('button', { class: 'btn small', type: 'button', onclick: () => download(`${ds.name}-clean.csv`, datasetToCSV(ds, [...Array(ds.rowCount).keys()])) }, '⇩ Cleaned CSV'),
-      el('button', { class: 'btn small', type: 'button', onclick: () => exportExcel(`${ds.name} clean`, [datasetSheet(ds, [...Array(ds.rowCount).keys()])]) }, '⇩ Cleaned Excel')));
+      el('button', { class: 'btn small', type: 'button', onclick: () => exportExcel(`${ds.name} clean`, [datasetSheet(ds, [...Array(ds.rowCount).keys()])]) }, '⇩ Cleaned Excel')),
+    el('h3', { class: 'recipe-head' }, 'Recipe'),
+    el('p', { class: 'muted small' }, 'Save these steps and replay them on next month’s file in one click. Lumora also offers your latest recipe automatically when you open a file with the same columns.'),
+    el('div', { class: 'history-actions' },
+      el('button', { class: 'btn small', type: 'button', disabled: !state.steps.some(isPortable), onclick: saveRecipeFile }, '⇩ Save recipe'),
+      el('button', { class: 'btn small', type: 'button', onclick: pickRecipeFile }, '↻ Apply a recipe…')));
 
   return el('div', { class: 'clean-view' },
-    el('div', { class: 'clean-actions' }, learnTip('cleaning'), combineCard(), dupCard, missingCard, formulaCard, textCard, renameCard, keepCard),
+    el('div', { class: 'clean-actions' }, learnTip('cleaning'),
+      healthCard(),
+      el('h2', { class: 'clean-group' }, 'Fix problems'), dupCard, missingCard, textCard, replaceCard(),
+      el('h2', { class: 'clean-group' }, 'Add columns'), formulaCard, groupCard(), datePartsCard(),
+      el('h2', { class: 'clean-group' }, 'Reshape'), splitCard(), renameCard, keepCard, combineCard()),
     history);
+}
+
+// ---------- data health ----------
+
+const scoreTone = (score) => (score >= 90 ? 'good' : score >= 70 ? 'ok' : 'poor');
+const scoreBadge = (score) => el('span', { class: `score ${scoreTone(score)}`, title: 'Data health score out of 100' }, String(score));
+
+function healthBanner() {
+  if (!healthReady()) {
+    return el('div', { class: 'health-banner' },
+      el('span', { class: 'score' }, '?'),
+      el('div', { class: 'grow' }, el('strong', {}, 'Data health'), ' ', el('span', { class: 'muted' }, 'This is a big file, so the check runs when you ask.')),
+      el('button', { class: 'btn small', type: 'button', onclick: () => { healthIssues(); render(); } }, 'Check now'));
+  }
+  const issues = healthIssues();
+  const score = healthScore(issues);
+  const serious = issues.filter((i) => i.severity === 'high').length;
+  return el('div', { class: `health-banner ${scoreTone(score)}` },
+    scoreBadge(score),
+    el('div', { class: 'grow' },
+      el('strong', {}, 'Data health'), ' ',
+      el('span', { class: 'muted' }, issues.length
+        ? `${plural(issues.length, 'thing')} to check${serious ? ` (${serious} serious)` : ''}: ${issues.slice(0, 2).map((i) => i.title).join('; ')}${issues.length > 2 ? '; …' : ''}`
+        : 'No problems found. Your data is ready to analyse.')),
+    issues.length > 0 && el('button', { class: 'btn small', type: 'button', onclick: () => { state.tab = 'clean'; render(); window.scrollTo(0, 0); } }, 'Review and fix →'));
+}
+
+function healthCard() {
+  if (!healthReady()) {
+    return actionCard('Data health check', 'cleaning', 'Looks for duplicates, inconsistent spelling, numbers stored as text and empty columns.',
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => { healthIssues(); render(); } }, 'Run the check'));
+  }
+  const issues = healthIssues();
+  const score = healthScore(issues);
+  const safe = issues.filter((i) => i.safe);
+  return el('section', { class: 'card action-card health-card' },
+    el('div', { class: 'health-head' },
+      scoreBadge(score),
+      el('div', {},
+        el('h3', {}, 'Data health check'),
+        el('p', { class: 'muted' }, issues.length
+          ? 'Fix each problem with one click, or fix the safe ones all at once. Every fix is a step you can undo.'
+          : 'No problems found. Your data is ready to analyse.'))),
+    issues.length > 0 && el('ul', { class: 'issue-list' }, issues.map((issue) =>
+      el('li', { class: `issue sev-${issue.severity}` },
+        el('span', { class: 'sev-dot', title: `${issue.severity} priority` }),
+        el('div', { class: 'grow' },
+          el('strong', {}, issue.title),
+          el('p', { class: 'muted small' }, issue.detail)),
+        issue.fix && el('button', { class: `btn small${issue.safe ? ' primary' : ''}`, type: 'button', onclick: () => addStep(issue.fix) }, issue.fixLabel)))),
+    safe.length > 1 && el('button', { class: 'btn primary small', type: 'button', onclick: fixAllSafe }, `✓ Fix all ${safe.length} safe problems`),
+    issues.length > safe.length && el('p', { class: 'muted small' }, 'Problems without a highlighted button need your judgement: their fix removes or changes information.'));
+}
+
+function fixAllSafe() {
+  const fixes = healthIssues().filter((i) => i.safe).map((i) => i.fix);
+  if (setSteps([...state.steps, ...fixes])) toast(`✓ Applied ${plural(fixes.length, 'fix')}. Undo removes them one at a time.`, 'info');
+}
+
+// ---------- more cleaning tools ----------
+
+function replaceCard() {
+  const f = state.clean;
+  const names = cols().map((c) => c.name);
+  const column = names.includes(f.replCol) ? f.replCol : (f.replCol = names[0]);
+  const col = cols()[colIndex(column)];
+  const count = el('span', { class: 'muted small' });
+  const match = f.replMatch ?? 'exact';
+  const recount = () => {
+    const find = f.find ?? '';
+    if (!find.trim()) {
+      count.textContent = '';
+      return;
+    }
+    const needle = find.trim().toLowerCase();
+    const raw = col.raw;
+    let n = 0;
+    for (let i = 0; i < raw.length; i++) {
+      const v = String(raw[i] ?? '').toLowerCase();
+      if (match === 'contains' ? v.includes(find.toLowerCase()) : v.trim() === needle) n++;
+    }
+    count.textContent = n ? `${plural(n, 'row')} match` : 'No rows match';
+  };
+  recount();
+  return actionCard('Find and replace', null, 'Fix a wrong or inconsistent value everywhere at once, e.g. change "NYC" to "New York". Leave "replace with" empty to blank it out.',
+    el('div', { class: 'form-row' },
+      select(names.map((n) => ({ value: n, label: n })), column, (v) => { f.replCol = v; render(); }, { 'aria-label': 'Column to search' }),
+      el('input', { type: 'text', value: f.find ?? '', placeholder: 'Find', 'aria-label': 'Find', oninput: (e) => { f.find = e.target.value; recount(); } }),
+      el('input', { type: 'text', value: f.replaceWith ?? '', placeholder: 'Replace with', 'aria-label': 'Replace with', oninput: (e) => { f.replaceWith = e.target.value; } }),
+      select([{ value: 'exact', label: 'whole value' }, { value: 'contains', label: 'anywhere in the value' }], match, (v) => { f.replMatch = v; render(); }, { 'aria-label': 'Match' }),
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => addStep({ op: 'replace', column, find: f.find ?? '', replace: f.replaceWith ?? '', match }) }, 'Replace')),
+    count);
+}
+
+function splitCard() {
+  const f = state.clean;
+  const names = cols().filter((c) => c.type === 'category' || c.type === 'text').map((c) => c.name);
+  if (!names.length) return null;
+  const column = names.includes(f.splitCol) ? f.splitCol : (f.splitCol = names[0]);
+  const by = f.splitBy ?? ',';
+  const note = el('span', { class: 'muted small' });
+  const describe = () => {
+    const n = splitCount(cols()[colIndex(column)], f.splitBy ?? ',');
+    note.textContent = n >= 2 ? `Makes ${n} new columns next to ${column}.` : 'No value contains that separator yet.';
+  };
+  describe();
+  return actionCard('Split a column', null, 'Break values like "London, UK" or "Smith; John" into separate columns. The original column stays.',
+    el('div', { class: 'form-row' },
+      select(names.map((n) => ({ value: n, label: n })), column, (v) => { f.splitCol = v; render(); }, { 'aria-label': 'Column to split' }),
+      el('label', { class: 'muted small' }, 'on'),
+      el('input', { type: 'text', class: 'narrow', value: by, 'aria-label': 'Separator', oninput: (e) => { f.splitBy = e.target.value; describe(); } }),
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => addStep({ op: 'split', column, by: f.splitBy ?? ',' }) }, 'Split')),
+    note);
+}
+
+function groupCard() {
+  const f = state.clean;
+  const ds = state.dataset;
+  const options = cols().filter((c) => c.type === 'number' || c.type === 'category').map((c) => c.name);
+  if (!options.length) return null;
+  const column = options.includes(f.groupCol) ? f.groupCol : (f.groupCol = options[0]);
+  const col = cols()[colIndex(column)];
+  const isNumber = col.type === 'number';
+  let hint = '';
+  if (isNumber) {
+    const present = col.values.filter((v) => v != null);
+    if (present.length) {
+      const [lo, hi] = extent(present);
+      hint = `Automatic size: ${formatNumber(niceBinSize(lo, hi))}`;
+    }
+  }
+  const name = f.groupName?.trim() || uniqueName(ds, isNumber ? `${column} range` : `${column} (top ${f.groupKeep || 5})`);
+  return actionCard('Group values', null, isNumber
+    ? 'Turn exact numbers into ranges such as "20 – 30", so you can count and compare groups (e.g. age bands or order sizes).'
+    : 'Keep the most common values and put the rest under "Other", so charts and summaries stay readable.',
+    el('div', { class: 'form-row' },
+      select(options.map((n) => ({ value: n, label: n })), column, (v) => { f.groupCol = v; f.groupName = ''; render(); }, { 'aria-label': 'Column to group' }),
+      isNumber
+        ? el('input', { type: 'number', class: 'narrow', min: '0', step: 'any', value: f.groupSize ?? '', placeholder: 'size', title: hint, 'aria-label': 'Range size', oninput: (e) => { f.groupSize = e.target.value; } })
+        : el('label', { class: 'muted small' }, 'keep top ', el('input', { type: 'number', class: 'narrow', min: '1', value: f.groupKeep ?? 5, 'aria-label': 'How many values to keep', onchange: (e) => { f.groupKeep = e.target.value; render(); } })),
+      el('input', { type: 'text', value: f.groupName ?? '', placeholder: name, 'aria-label': 'New column name', oninput: (e) => { f.groupName = e.target.value; } }),
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => {
+        const step = isNumber
+          ? { op: 'group', column, name, method: 'bins', ...(Number(f.groupSize) > 0 ? { size: Number(f.groupSize) } : {}) }
+          : { op: 'group', column, name, method: 'top', keep: Number(f.groupKeep) || 5 };
+        f.groupName = '';
+        addStep(step);
+      } }, 'Add column')),
+    hint && el('span', { class: 'muted small' }, `${hint}. Leave the size empty to use it.`));
+}
+
+function datePartsCard() {
+  const f = state.clean;
+  const ds = state.dataset;
+  const dates = cols().filter((c) => c.type === 'date').map((c) => c.name);
+  if (!dates.length) return null;
+  const column = dates.includes(f.dateCol) ? f.dateCol : (f.dateCol = dates[0]);
+  const part = DATE_PARTS[f.datePart] ? f.datePart : (f.datePart = 'month');
+  const name = uniqueName(ds, `${column} ${DATE_PARTS[part].label.toLowerCase()}`);
+  return actionCard('Date parts', null, 'Pull out the month, weekday, quarter or year as its own column, to compare "Mondays vs Fridays" or "Q1 vs Q2".',
+    el('div', { class: 'form-row' },
+      select(dates.map((n) => ({ value: n, label: n })), column, (v) => { f.dateCol = v; render(); }, { 'aria-label': 'Date column' }),
+      select(Object.entries(DATE_PARTS).map(([value, p]) => ({ value, label: p.label })), part, (v) => { f.datePart = v; render(); }, { 'aria-label': 'Part of the date' }),
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => addStep({ op: 'dateParts', column, part, name }) }, `Add "${name}"`)));
+}
+
+// ---------- step history and recipes ----------
+
+function removeStep(k) {
+  const step = state.steps[k];
+  const rest = state.steps.filter((_, j) => j !== k);
+  if (step.op === 'rename') renameInReport(step.to, step.column);
+  const ok = setSteps(rest, step.op === 'rename' ? { [step.to]: step.column } : {},
+    (message) => `Can't remove "${describeStep(step)}": a later step depends on it. ${message}`);
+  if (ok) toast(`Removed: ${describeStep(step)}`, 'info');
+  else if (step.op === 'rename') renameInReport(step.column, step.to);
+}
+
+function applyRecipe(recipe) {
+  const { missing } = recipeFits(recipe, state.dataset);
+  if (missing.length) {
+    toast(`This recipe needs column${missing.length > 1 ? 's' : ''} ${missing.join(', ')}, which ${missing.length > 1 ? "aren't" : "isn't"} in this file.`);
+    return;
+  }
+  const renames = Object.fromEntries(recipe.steps.filter((s) => s.op === 'rename').map((s) => [s.column, s.to]));
+  if (setSteps([...state.steps, ...recipeSteps(recipe, state.dataset)], renames)) {
+    toast(`✓ Applied ${plural(recipe.steps.length, 'cleaning step')} from “${recipe.source}”.`, 'info');
+  }
+}
+
+function saveRecipeFile() {
+  const recipe = makeRecipe(state.steps, state.original.name, state.original);
+  const name = state.original.name.replace(/[^\w\- ]+/g, '').trim() || 'cleaning';
+  download(`${name} recipe.json`, JSON.stringify(recipe, null, 2), 'application/json');
+  toast(recipe.skipped
+    ? `Recipe saved. ${plural(recipe.skipped, 'step')} that added another file’s data ${recipe.skipped === 1 ? 'was' : 'were'} left out.`
+    : 'Recipe saved. Apply it to another file from the Clean tab.', 'info');
+}
+
+function pickRecipeFile() {
+  const input = el('input', { type: 'file', accept: '.json,application/json', hidden: true });
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    input.remove();
+    if (!file) return;
+    try {
+      const json = JSON.parse(await file.text());
+      if (!isRecipe(json)) throw new Error('it isn’t a Lumora cleaning recipe');
+      applyRecipe(json);
+    } catch (err) {
+      toast(`Couldn't use ${file.name}: ${err.message}`);
+    }
+  });
+  document.body.append(input);
+  input.click();
+}
+
+function recipeBanner() {
+  const r = state.recipeOffer;
+  if (!r) return null;
+  return el('div', { class: 'recipe-banner card' },
+    el('span', { class: 'insight-icon', 'aria-hidden': 'true' }, '↻'),
+    el('div', { class: 'grow' },
+      el('strong', {}, `Clean this file the same way as “${r.source}”?`),
+      el('p', { class: 'muted small' }, `It has every column your last cleaning recipe uses. ${plural(r.steps.length, 'step')}: ${r.steps.slice(0, 3).map(describeStep).join('; ')}${r.steps.length > 3 ? '; …' : ''}`)),
+    el('div', { class: 'banner-actions' },
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => applyRecipe(r) }, 'Apply recipe'),
+      el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.recipeOffer = null; render(); } }, 'No thanks')));
 }
 
 // ---------- combine ----------
@@ -1432,6 +1714,7 @@ function openProject(json, { imported = false } = {}) {
   state.report = p.report;
   state.clean = {};
   state.addingFilter = null;
+  state.recipeOffer = null;
   chooseDefaults();
   state.tab = 'overview';
   restoreView(p.view);
@@ -1816,7 +2099,111 @@ window.addEventListener('paste', (e) => {
   if (text && text.includes('\n')) loadText(text, 'pasted data.csv');
 });
 
+// ---------- command palette (Ctrl+K) ----------
+
+function goTab(tab) {
+  state.tab = tab;
+  render();
+  window.scrollTo(0, 0);
+}
+
+function paletteCommands() {
+  const cmds = [];
+  const add = (group, icon, title, run, keywords) => cmds.push({ group, icon, title, run, keywords });
+  if (state.dataset) {
+    const ds = state.dataset;
+    TABS.forEach((t) => add('Go to', t.icon, t.label, () => goTab(t.id), `tab ${t.id}`));
+    add('Action', '?', 'Ask a question about the data', () => { goTab('overview'); document.querySelector('.ask-input')?.focus(); }, 'ask plain english');
+    add('Action', '+', 'Add a filter', () => {
+      if (['learn', 'report'].includes(state.tab)) state.tab = 'table';
+      state.addingFilter = { column: 0, op: FILTER_OPS[cols()[0].type][0], value: '' };
+      render();
+    }, 'filter rows where');
+    if (state.filters.length) add('Action', '✕', 'Clear all filters', () => { state.filters = []; update(); });
+    if (state.steps.length) add('Action', '↶', `Undo: ${describeStep(state.steps.at(-1))}`, undo, 'undo');
+    add('Action', '♥', 'Check data health', () => goTab('clean'), 'problems issues quality fix');
+    if (healthReady()) {
+      const safe = healthIssues().filter((i) => i.safe).length;
+      if (safe) add('Action', '✓', `Fix ${plural(safe, 'safe problem')}`, fixAllSafe, 'clean fix all');
+    }
+    add('Action', '⇩', 'Export rows to CSV', () => download(`${ds.name}${state.filters.length ? '-filtered' : ''}.csv`, datasetToCSV(ds, indices)), 'download csv');
+    add('Action', '⇩', 'Export rows to Excel', () => exportExcel(`${ds.name}${state.filters.length ? ' filtered' : ''}`, [datasetSheet(ds, indices)]), 'download xlsx spreadsheet');
+    add('Action', '⇩', 'Save project file', saveProjectFile, 'download lumora');
+    if (state.steps.some(isPortable)) add('Action', '⇩', 'Save cleaning recipe', saveRecipeFile, 'download steps');
+    add('Action', '↻', 'Apply a cleaning recipe…', pickRecipeFile, 'replay steps');
+    if (state.report.length) add('Action', '🖨', 'Print or save the report as PDF', () => { goTab('report'); setTimeout(printReport, 50); }, 'pdf');
+    add('Action', '⌂', 'Close this data and go to the start screen', () => document.getElementById('home-btn').click(), 'home start');
+    cols().forEach((c, i) => {
+      add('Column', TYPE_ICONS[c.type], `${c.name}: details`, () => openProfile(i), `profile ${TYPE_LABELS[c.type]}`);
+      add('Column', '∿', `Chart ${c.name}`, () => { state.chart = { type: 'auto', x: i, y: null, agg: 'mean', color: null }; goTab('chart'); }, 'plot graph');
+      add('Column', '⇅', `Sort table by ${c.name}`, () => { state.table.sort = i; state.table.dir = 'desc'; goTab('table'); }, 'order');
+    });
+  }
+  add('App', '📂', 'Open a file', () => $fileInput.click(), 'load import csv excel');
+  add('App', '◐', 'Switch dark / light mode', () => $theme.click(), 'theme');
+  add('App', '💡', `${state.learn ? 'Turn off' : 'Turn on'} Learn mode`, () => $learn.click(), 'explanations tips');
+  add('App', '★', "What's new", () => showWhatsNew(), 'changelog version');
+  SAMPLES.forEach((smp) => add('Practice data', smp.emoji, `Open practice data: ${smp.name}`, () => loadSample(smp.id), 'sample example'));
+  LESSONS.forEach((l) => add('Lesson', '🎓', l.title, () => runLesson(l), `learn ${l.terms.join(' ')}`));
+  return cmds;
+}
+
+function openPalette() {
+  if (document.querySelector('dialog.palette')) return;
+  const commands = paletteCommands();
+  const dlg = el('dialog', { class: 'palette', 'aria-label': 'Search commands' });
+  const input = el('input', { type: 'search', class: 'palette-input', placeholder: 'Search tabs, columns and actions…', 'aria-label': 'Search commands', autocomplete: 'off' });
+  const list = el('ul', { class: 'palette-list', role: 'listbox' });
+  let shown = [];
+  let active = 0;
+  const setActive = (k) => {
+    active = k;
+    [...list.children].forEach((li, j) => {
+      li.classList.toggle('active', j === k);
+      li.setAttribute('aria-selected', String(j === k));
+    });
+    list.children[k]?.scrollIntoView({ block: 'nearest' });
+  };
+  const run = (c) => {
+    dlg.close();
+    c.run();
+  };
+  const draw = () => {
+    shown = rankCommands(commands, input.value, 40);
+    clear(list).append(...shown.map((c, k) => el('li', { class: 'palette-item', role: 'option', onmousemove: () => active !== k && setActive(k), onclick: () => run(c) },
+      el('span', { class: 'palette-icon', 'aria-hidden': 'true' }, c.icon),
+      el('span', { class: 'palette-title' }, c.title),
+      el('span', { class: 'palette-group' }, c.group))));
+    if (!shown.length) list.append(el('li', { class: 'palette-empty' }, 'Nothing matches. Try another word.'));
+    setActive(0);
+  };
+  input.addEventListener('input', draw);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (shown.length) setActive((active + (e.key === 'ArrowDown' ? 1 : shown.length - 1)) % shown.length);
+    } else if (e.key === 'Enter' && shown[active]) {
+      e.preventDefault();
+      run(shown[active]);
+    }
+  });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.append(input, list, el('div', { class: 'palette-hint muted small' }, '↑↓ to move · Enter to run · Esc to close'));
+  document.body.append(dlg);
+  dlg.showModal();
+  draw();
+  input.focus();
+}
+
+document.getElementById('palette-btn').addEventListener('click', openPalette);
+
 window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    openPalette();
+    return;
+  }
   if (e.key === '/' && state.dataset && !e.target.closest?.('input, textarea, select')) {
     e.preventDefault();
     if (state.tab !== 'overview') {

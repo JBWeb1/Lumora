@@ -21,7 +21,10 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 - **Column profiles.** Each column gets a mini histogram or top values, plus a full statistics panel (mean, median, quartiles, IQR, skewness, outliers, …).
 - **Chart builder with "Auto" mode.** Choose columns and Lumora picks a histogram, bar, scatter (with trend line and R²), line (with moving average) or box plot, and explains *why* it chose that chart.
 - **"Is this real, or just luck?"** Below each chart, Lumora runs the right significance test (correlation test, Welch's t-test, one-way ANOVA or chi-square). It explains the p-value, the effect size and the confidence interval in plain English.
-- **Clean tab with undo.** Remove duplicates, fill or drop missing values (median, mean, most common, previous row, or a value you choose), tidy text, rename or delete columns, and make filters permanent. Every action is recorded as a step, so you can undo with Ctrl+Z or start over. The original file is never changed.
+- **Data health check.** A score out of 100 on the Overview, and a list of problems in the Clean tab: duplicate rows, spelling variants ("NY", "ny", " NY "), numbers or dates stored as text, values that can't be read as numbers, and empty or constant columns. Each has a one-click fix, and **Fix all safe problems** applies every fix that doesn't remove information.
+- **Cleaning recipes.** Lumora remembers your cleaning steps. When you open another file with the same columns (next month's export, say), it offers to clean it the same way in one click, matching column types first so a messier file gets the same treatment. Save a recipe as a file to share it or apply it later.
+- **Search everything (Ctrl+K / ⌘K).** Type a few letters to jump to a tab, open a column's details, chart or sort by a column, export, undo or start a lesson.
+- **Clean tab with undo.** Remove duplicates (across every column, or by a chosen column such as email), fill or drop missing values (median, mean, most common, previous row, or a value you choose), tidy text, **find and replace**, **split a column** ("London, UK" → two columns), **group values** (numbers into ranges such as "20 – 30", or the top categories plus "Other"), pull out **date parts** (month, weekday, quarter, year), rename or delete columns, and make filters permanent. Every action is recorded as a step. Undo with Ctrl+Z, remove any step from the history, or start over. The original file is never changed.
 - **Calculated columns** with a safe formula language, e.g. `round(revenue / customers, 2)` or `if(temperature_c > 20, "hot", "cold")`. It shows a live preview and suggests a fix when you mistype a column name.
 - **Color-by-category scatter plots** and **chart downloads** as high-resolution PNG or SVG.
 - **Filters** that apply everywhere: overview, table, charts and summaries.
@@ -72,7 +75,8 @@ src/app.js                UI: home, overview, table, chart, summarize, drivers, 
 src/worker.js             background file loader (Web Worker)
 src/version.js            app version and user-facing changelog
 sw.js, manifest.webmanifest  offline cache, self-updating, installable app
-src/ui/                   DOM helpers, SVG charts, chart export, update handling, project storage
+src/ui/                   DOM helpers, SVG charts, chart export, update handling, project storage, Android bridge
+apps/                     Android APK and desktop installers (see apps/README.md)
 src/core/                 Pure, tested logic (no DOM):
   csv.js                    CSV/TSV/JSON parsing
   infer.js                  type detection and conversion
@@ -83,6 +87,9 @@ src/core/                 Pure, tested logic (no DOM):
   drivers.js                key-driver ranking
   project.js                save/restore projects (.lumora files)
   clean.js                  replayable cleaning steps (powers undo)
+  health.js                 data health check and one-click fixes
+  recipe.js                 reusable cleaning recipes
+  palette.js                command palette matching (Ctrl+K)
   formula.js                safe formula parser/evaluator for calculated columns
   significance.js           t-test, ANOVA, chi-square, correlation test + verdicts
   xlsx.js                   dependency-free Excel reader

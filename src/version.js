@@ -1,10 +1,22 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '0.7.0',
+    date: '2026-10-16',
+    items: [
+      'Data health check: a score out of 100 and a list of problems (duplicates, inconsistent spelling, numbers stored as text, unreadable values, empty columns), each with a one-click fix, plus "Fix all safe problems".',
+      'New cleaning tools: find and replace, split a column (e.g. "City, State"), group numbers into ranges or keep the top values plus "Other", pull out the month, weekday, quarter or year from a date, and remove duplicates by a chosen column.',
+      'Cleaning recipes: Lumora remembers your cleaning steps and offers them when you open a file with the same columns, like next month’s export. Save a recipe to share it or apply it later.',
+      'Remove any cleaning step from the history, not just the last one.',
+      'Search everything with Ctrl+K (⌘K on Mac): jump to a tab, a column or an action by typing a few letters.',
+      'Months, weekdays, quarters and ranges now appear in their natural order in summaries and charts.',
+    ],
+  },
   {
     version: '0.6.0',
     date: '2026-10-15',

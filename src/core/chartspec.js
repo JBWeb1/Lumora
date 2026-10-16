@@ -1,6 +1,6 @@
 // Picks a sensible chart for the chosen columns and prepares the data to draw.
 
-import { dateBucket, aggregate, groupKey } from './transform.js';
+import { dateBucket, aggregate, groupKey, naturalOrder } from './transform.js';
 import { describe, frequencies, histogram, isNum, linearRegression, pearson } from './stats.js';
 import { forecastSeries } from './forecast.js';
 
@@ -182,6 +182,11 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
     }
     if (!bars.length) return { error: 'Nothing to plot.' };
     if (xCol.type === 'number' || xCol.type === 'date') bars.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+    else if (bars.length <= MAX_BARS) {
+      // Ranges, months, weekdays and quarters read best in their own order.
+      const order = naturalOrder(bars.map((x) => x.label));
+      if (order) bars.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
+    }
     const total = bars.length;
     return { type, xLabel: xCol.name, valueLabel: yCol ? `${agg} of ${yCol.name}` : 'Rows', bars: bars.slice(0, MAX_BARS), total };
   }

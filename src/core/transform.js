@@ -141,6 +141,30 @@ export function groupKey(col, v, dateUnit) {
 }
 
 /** Natural order for group labels: weekdays Mon→Sun, dates and numbers ascending, categories biggest first. */
+// Category values with a natural order (made by "Group into ranges" or "Date parts") keep it.
+const NATURAL_SEQUENCES = [
+  ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+  ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+  ['Q1', 'Q2', 'Q3', 'Q4'],
+];
+const RANGE_LABEL = /^(-?\d+(?:\.\d+)?(?:e[-+]?\d+)?) – -?\d/;
+const LAST = new Set(['(missing)', 'Other']);
+
+export function naturalOrder(keys) {
+  const real = keys.filter((k) => !LAST.has(k));
+  if (!real.length) return null;
+  const tail = (a, b) => (LAST.has(a) - LAST.has(b)) || (a === '(missing)') - (b === '(missing)');
+  for (const seq of NATURAL_SEQUENCES) {
+    if (real.every((k) => seq.includes(k))) return keys.sort((a, b) => tail(a, b) || seq.indexOf(a) - seq.indexOf(b));
+  }
+  if (real.every((k) => RANGE_LABEL.test(k))) {
+    const start = (k) => Number(RANGE_LABEL.exec(k)[1]);
+    return keys.sort((a, b) => tail(a, b) || start(a) - start(b));
+  }
+  if (real.every((k) => /^\d{4}-\d{2}$/.test(k))) return keys.sort((a, b) => tail(a, b) || (a < b ? -1 : a > b ? 1 : 0));
+  return null;
+}
+
 function orderKeys(col, keys, sizeOf, dateUnit) {
   if (col.type === 'date' && dateUnit === 'weekday') {
     return keys.sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b));
@@ -148,7 +172,7 @@ function orderKeys(col, keys, sizeOf, dateUnit) {
   if (col.type === 'date' || col.type === 'number') {
     return keys.sort((a, b) => (a === '(missing)') - (b === '(missing)') || compareValues(a, b));
   }
-  return keys.sort((a, b) => sizeOf(b) - sizeOf(a) || compareValues(a, b));
+  return naturalOrder(keys) ?? keys.sort((a, b) => sizeOf(b) - sizeOf(a) || compareValues(a, b));
 }
 
 /**
