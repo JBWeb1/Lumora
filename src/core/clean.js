@@ -5,6 +5,7 @@ import { convertValues, inferType, isMissingRaw, TYPES } from './infer.js';
 import { applyFilters } from './transform.js';
 import { evaluateFormula } from './formula.js';
 import { appendRows, joinColumns } from './combine.js';
+import { findGroups } from './analyses-more.js';
 import { extent, frequencies, mean, median, numbers } from './stats.js';
 
 export class StepError extends Error {}
@@ -289,6 +290,13 @@ export function applyStep(ds, step) {
       columns.splice(i + 1, 0, makeColumn(name, raw, part.type));
       return { ...ds, columns };
     }
+    case 'segments': {
+      const name = newColumnName(ds, step.name);
+      const result = findGroups(ds, [...Array(ds.rowCount).keys()], { columns: step.columns, k: step.k });
+      if (result.error) throw new StepError(result.error);
+      const raw = result.labels.map((l) => l ?? '');
+      return { ...ds, columns: [...ds.columns, makeColumn(name, raw, 'category')] };
+    }
     case 'append':
       return appendRows(ds, step.data, { sourceColumn: step.sourceColumn ?? null, baseLabel: step.baseLabel ?? ds.name, otherLabel: step.data.name });
     case 'join':
@@ -320,6 +328,7 @@ export function describeStep(step) {
       return `Merge ${n} spelling variant${n === 1 ? '' : 's'} in ${step.column}`;
     }
     case 'split': return `Split ${step.column} on "${step.by}"`;
+    case 'segments': return `New column ${step.name}: ${step.k} natural groups from ${step.columns.join(', ')}`;
     case 'group': return step.method === 'bins'
       ? `New column ${step.name}: ${step.column} grouped into ranges${step.size ? ` of ${step.size}` : ''}`
       : `New column ${step.name}: top ${step.keep} ${step.column} values, the rest as Other`;

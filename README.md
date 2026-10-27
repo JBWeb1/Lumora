@@ -21,6 +21,19 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 - **Column profiles.** Each column gets a mini histogram or top values, plus a full statistics panel (mean, median, quartiles, IQR, skewness, outliers, …).
 - **Chart builder with "Auto" mode.** Choose columns and Lumora picks a histogram, bar, scatter (with trend line and R²), line (with moving average) or box plot, and explains *why* it chose that chart.
 - **"Is this real, or just luck?"** Below each chart, Lumora runs the right significance test (correlation test, Welch's t-test, one-way ANOVA or chi-square). It explains the p-value, the effect size and the confidence interval in plain English.
+- **Analyses: "What do you want to find out?"** Pick a plain question and Lumora answers in one sentence, with the chart and details behind it. It shows only the questions your data can answer and chooses sensible settings (it measures revenue rather than an ID, compares weekends with weekdays, and allows for busy Saturdays when looking for unusual days):
+  - *Why did it change?* Breaks the change between two periods down by the groups that caused it.
+  - *How do two groups differ?* Every number side by side, with a "real or luck?" verdict.
+  - *What affects a number?* Key drivers.
+  - *What makes up most of the total?* The 80/20 split.
+  - *Were there any unusual days?*
+  - *Is it growing, and when is it busiest?* Trend, weekly and yearly pattern.
+  - *What if something changes?* Sliders on a prediction model.
+  - *Are there natural groups?* Clusters, described in words, which you can save as a column.
+  - *Does one thing affect another later?* Delayed effects.
+  - *Do people come back?* Monthly return rates.
+  - *Where do people drop off?* Funnels.
+  - *What are people saying?* Themes and tone in written answers.
 - **Form maker: collect your own data.** Design a form with short or long answers, numbers (with limits), dates, ratings, yes/no, and one or several choices, or start from a template (customer feedback, event sign-up, stock count, expense log, daily check-in). Fill it in on this device for fast data entry, or share a link: the whole form travels inside the link, so there's no account or server. Each person gets a short answer code (and an email button if you add your address) to send back; paste the codes under *Responses → Import answers*. Duplicates are skipped and every answer is re-checked. The Responses page summarises each question, and **Analyse in Lumora** turns the answers into a typed dataset, with a yes/no column for each checkbox option.
 - **Data health check.** A score out of 100 on the Overview, and a list of problems in the Clean tab: duplicate rows, spelling variants ("NY", "ny", " NY "), numbers or dates stored as text, values that can't be read as numbers, and empty or constant columns. Each has a one-click fix, and **Fix all safe problems** applies every fix that doesn't remove information.
 - **Cleaning recipes.** Lumora remembers your cleaning steps. When you open another file with the same columns (next month's export, say), it offers to clean it the same way in one click, matching column types first so a messier file gets the same treatment. Save a recipe as a file to share it or apply it later.
@@ -92,6 +105,8 @@ src/core/                 Pure, tested logic (no DOM):
   recipe.js                 reusable cleaning recipes
   palette.js                command palette matching (Ctrl+K)
   forms.js                  form maker: questions, validation, share links, answer codes
+  analyses.js               change breakdown, group comparison, unusual days, 80/20, text themes
+  analyses-more.js          natural groups, what-if model, return rates, funnels, trend/pattern, delayed effects
   encoding.js               file encodings (UTF-8, Windows-1252, UTF-16)
   formula.js                safe formula parser/evaluator for calculated columns
   significance.js           t-test, ANOVA, chi-square, correlation test + verdicts

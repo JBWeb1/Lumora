@@ -1,10 +1,20 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '0.9.0',
+    date: '2026-10-27',
+    items: [
+      'New Analyses tab: “What do you want to find out?” Pick a plain question and get a one-sentence answer, a chart and the details. Lumora only shows the questions that fit your data and chooses sensible settings for you.',
+      'Twelve questions: why did it change, how do two groups differ, what affects a number, what makes up most of the total (80/20), unusual days, trend and busiest times, what-if sliders, natural groups, delayed effects, do people come back, where do people drop off, and what people are saying in written answers.',
+      'Quick question buttons on the Overview, and every question is in Search (Ctrl+K). Pin any answer to your report; it stays live.',
+      'Save natural groups as a new column, and jump from an unusual day straight to its rows.',
+    ],
+  },
   {
     version: '0.8.0',
     date: '2026-10-27',

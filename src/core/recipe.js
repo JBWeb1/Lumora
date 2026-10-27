@@ -47,7 +47,7 @@ export function requiredColumns(steps) {
     s.columns?.forEach(use);
     s.filters?.forEach((f) => use(f.column));
     if (s.op === 'rename') made.add(s.to);
-    if (['formula', 'group', 'dateParts'].includes(s.op)) made.add(s.name);
+    if (['formula', 'group', 'dateParts', 'segments'].includes(s.op)) made.add(s.name);
     if (s.op === 'split') splitFrom.push(s.column);
   }
   return [...needed];

@@ -106,7 +106,8 @@ export function histogramChart(data) {
 export function barChart(data) {
   const { bars } = data;
   const longest = Math.max(...bars.map((b) => Math.min(24, b.label.length)));
-  const m = { t: 12, r: 70, b: 44, l: Math.min(200, 16 + longest * 7.2) };
+  const hasNotes = bars.some((b) => b.note);
+  const m = { t: 12, r: hasNotes ? 130 : 70, b: 44, l: Math.min(200, 16 + longest * 7.2) };
   const rowH = 26;
   const height = m.t + m.b + bars.length * rowH;
   const lo = Math.min(0, ...bars.map((b) => b.value));
@@ -124,8 +125,8 @@ export function barChart(data) {
       const w = Math.max(1, Math.abs(x(b.value) - x(0)));
       return [
         svg('text', { class: 'tick label', x: m.l - 8, y: top + (rowH - 8) / 2, 'text-anchor': 'end', 'dominant-baseline': 'middle' }, truncate(b.label, 24)),
-        svg('rect', { class: 'bar', x: x0, y: top, width: w, height: rowH - 8, rx: 3, 'data-tip': `${b.label}: ${formatNumber(b.value)}` }),
-        svg('text', { class: 'value', x: x0 + w + 6, y: top + (rowH - 8) / 2, 'dominant-baseline': 'middle' }, formatNumber(b.value)),
+        svg('rect', { class: b.tone ? `bar ${b.tone}` : 'bar', x: x0, y: top, width: w, height: rowH - 8, rx: 3, 'data-tip': `${b.label}: ${formatNumber(b.value)}${b.note ? ` (${b.note})` : ''}` }),
+        svg('text', { class: 'value', x: b.value < 0 ? x(0) + 6 : x0 + w + 6, y: top + (rowH - 8) / 2, 'dominant-baseline': 'middle' }, `${formatNumber(b.value)}${b.note ? ` · ${b.note}` : ''}`),
       ];
     }),
     svg('line', { class: 'axis', x1: x(0), x2: x(0), y1: m.t, y2: height - m.b }),
@@ -210,6 +211,10 @@ export function lineChart(data) {
       svg('circle', { class: pts.length <= 60 ? 'dot point' : 'hover-point', cx: x(p.x), cy: y(p.y), r: pts.length <= 60 ? 3.5 : 4, 'data-tip': `${fmtX(p.x)}: ${formatNumber(p.y)}` })
     ),
     fc && forecastLayer(fc, pts[pts.length - 1], x, y, m, fmtX),
+    (data.highlights ?? []).map((h) => [
+      svg('circle', { class: 'anomaly', cx: x(h.x), cy: y(h.y), r: 7, 'data-tip': h.label }),
+      svg('circle', { class: 'anomaly-dot', cx: x(h.x), cy: y(h.y), r: 3 }),
+    ]),
     axisTitles(data.xLabel, data.yLabel, m, W, H),
   ]);
 }

@@ -31,6 +31,7 @@ import { isPortable, isRecipe, makeRecipe, recipeFits, recipeSteps } from './cor
 import { rankCommands } from './core/palette.js';
 import { FORM_KIND } from './core/forms.js';
 import { createFormsUI } from './ui/forms-ui.js';
+import { createAnalysesUI, TOOLS as ANALYSIS_TOOLS } from './ui/analyses-ui.js';
 import { decodeText, isLumoraFile } from './core/encoding.js';
 
 // ---------- state ----------
@@ -77,10 +78,10 @@ let indices = [];
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: '✦' },
+  { id: 'analyses', label: 'Analyses', icon: '◇' },
   { id: 'table', label: 'Table', icon: '▦' },
   { id: 'chart', label: 'Chart', icon: '∿' },
   { id: 'summarize', label: 'Summarize', icon: 'Σ' },
-  { id: 'drivers', label: 'Drivers', icon: '◎' },
   { id: 'clean', label: 'Clean', icon: '✎' },
   { id: 'report', label: 'Report', icon: '❏', count: () => state.report.length },
   { id: 'learn', label: 'Learn', icon: '?' },
@@ -534,7 +535,41 @@ function lessonCard(lesson) {
 
 // ---------- workspace ----------
 
+// Analyses tab ("What do you want to find out?"). Key drivers lives inside it now.
+const analysesUI = createAnalysesUI({
+  dataset: () => state.dataset,
+  rows: () => indices,
+  sample: (rows) => analysisRows(rows),
+  memo,
+  plural,
+  pin: (item) => pin(item),
+  addStep: (step) => addStep(step),
+  renderDrivers: () => renderDrivers(),
+  rerender: () => render(),
+  filterOnDate: (name, day) => {
+    const column = colIndex(name);
+    if (column < 0) return;
+    state.filters.push({ column, op: 'on', value: day });
+    state.tab = 'table';
+    state.table.page = 0;
+    update();
+    window.scrollTo(0, 0);
+  },
+});
+
+function openAnalysis(id) {
+  analysesUI.open(id);
+  state.tab = 'analyses';
+  render();
+  window.scrollTo(0, 0);
+}
+
 function renderWorkspace() {
+  // Older projects and lessons may still say "drivers": it is a question in Analyses now.
+  if (state.tab === 'drivers') {
+    analysesUI.open('drivers');
+    state.tab = 'analyses';
+  }
   const nav = el('nav', { class: 'tabs', role: 'tablist' }, TABS.map((t) =>
     el('button', {
       class: `tab${state.tab === t.id ? ' active' : ''}`, role: 'tab', type: 'button',
@@ -542,7 +577,7 @@ function renderWorkspace() {
       onclick: () => { state.tab = t.id; render(); },
     }, el('span', { class: 'tab-icon', 'aria-hidden': 'true' }, t.icon), t.label, t.count?.() ? el('span', { class: 'tab-count' }, t.count()) : null)));
 
-  const views = { overview: renderOverview, table: renderTable, chart: renderChartTab, summarize: renderSummarize, drivers: renderDrivers, clean: renderClean, report: renderReport, learn: renderLearn };
+  const views = { overview: renderOverview, analyses: () => analysesUI.render(), table: renderTable, chart: renderChartTab, summarize: renderSummarize, clean: renderClean, report: renderReport, learn: renderLearn };
   return el('div', { class: 'workspace' }, nav, !['learn', 'report'].includes(state.tab) && renderFilterBar(), el('div', { class: 'view' }, views[state.tab]()));
 }
 
@@ -617,6 +652,7 @@ function renderOverview() {
     recipeBanner(),
     healthBanner(),
     renderAsk(),
+    quickQuestions(),
     el('div', { class: 'kpis' },
       kpi('Rows', indices.length.toLocaleString('en-US')),
       kpi('Columns', c.length),
@@ -637,6 +673,16 @@ function renderOverview() {
       el('h2', {}, 'How number columns relate'),
       learnTip('correlation'),
       el('div', { class: 'card chart-card scroll-x' }, heatmap(ov.corr.names, ov.corr.matrix))));
+}
+
+/** A few one-click questions from the Analyses tab that fit this data. */
+function quickQuestions() {
+  const ready = analysesUI.ready().filter((t) => t.id !== 'drivers').slice(0, 5);
+  if (!ready.length) return null;
+  return el('div', { class: 'quick-questions' },
+    el('span', { class: 'muted small' }, 'Find out:'),
+    ready.map((t) => el('button', { class: 'chip-btn', type: 'button', onclick: () => openAnalysis(t.id) }, el('span', { 'aria-hidden': 'true' }, `${t.icon} `), t.question)),
+    el('button', { class: 'link-btn', type: 'button', onclick: () => openAnalysis(null) }, 'More questions →'));
 }
 
 function kpi(label, value, term, wide) {
@@ -1990,6 +2036,8 @@ function renderReportItem(item) {
       const v = item.value.fn === 'count' ? rows.length : aggregate(rows.map((i) => c[idxOf(item.value.column)].values[i]), item.value.fn);
       content = el('p', { class: 'report-value' }, formatNumber(v), el('span', { class: 'muted small' }, ` from ${plural(rows.length, 'row')}`));
     }
+  } else if (item.kind === 'analysis') {
+    content = analysesUI.renderReportItem(item.analysis, rows);
   } else if (item.kind === 'drivers') {
     missing = missing.concat(missingCols([item.drivers.target]));
     if (!missing.length) {
@@ -2234,6 +2282,7 @@ function paletteCommands() {
     if (state.filters.length) add('Action', '✕', 'Clear all filters', () => { state.filters = []; update(); });
     if (state.steps.length) add('Action', '↶', `Undo: ${describeStep(state.steps.at(-1))}`, undo, 'undo');
     add('Action', '♥', 'Check data health', () => goTab('clean'), 'problems issues quality fix');
+    ANALYSIS_TOOLS.forEach((t) => add('Analysis', t.icon, t.question, () => openAnalysis(t.id), `analyse ${t.blurb}`));
     if (healthReady()) {
       const safe = healthIssues().filter((i) => i.safe).length;
       if (safe) add('Action', '✓', `Fix ${plural(safe, 'safe problem')}`, fixAllSafe, 'clean fix all');
