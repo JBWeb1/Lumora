@@ -91,7 +91,10 @@ export function joinKey(raw) {
   const t = String(raw ?? '').trim();
   if (!t) return null;
   const n = parseNumber(t);
-  return n != null ? `#${n}` : t.toLowerCase();
+  // Numbers match regardless of formatting ("007" = "7", "1,000" = "1000"), but IDs longer than
+  // 15 digits can't be held exactly as numbers, so they are compared as text.
+  const digits = t.replace(/\D/g, '').length;
+  return n != null && digits <= 15 ? `#${n}` : t.toLowerCase();
 }
 
 function indexByKey(rows, col) {

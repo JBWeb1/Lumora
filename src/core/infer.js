@@ -21,20 +21,34 @@ export function isMissingRaw(raw) {
 
 const NUMBER_RE = /^[-+]?(?:[$€£¥]\s?)?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d+)?(?:e[-+]?\d+)?%?$/i;
 
-/** Parse "1,234.5", "$20", "45%", "1e3" etc. Returns null when the text is not a number. */
+/** Parse "1,234.5", "$20", "45%", "1e3", "(1,234)" (accounting negative) etc. Returns null when the text is not a number. */
 export function parseNumber(raw) {
   if (raw == null) return null;
-  const s = String(raw).trim();
+  let s = String(raw).trim();
+  let sign = 1;
+  const paren = /^\((.+)\)$/.exec(s);
+  if (paren) {
+    s = paren[1].trim();
+    sign = -1;
+    if (/^[-+]/.test(s)) return null;
+  }
   if (!s || !/\d/.test(s) || !NUMBER_RE.test(s)) return null;
   const v = Number(s.replace(/[$€£¥,%\s]/g, ''));
-  return Number.isFinite(v) ? v : null;
+  return Number.isFinite(v) ? sign * v : null;
 }
 
 const ISO_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})$/;
 const ISO_DATETIME = /^\d{4}-\d{1,2}-\d{1,2}[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
 const YMD_SLASH = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/;
 const DMY_OR_MDY = /^(\d{1,2})[/.](\d{1,2})[/.](\d{4})$/;
-const NAMED_MONTH = /^(?:[A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{1,2} [A-Za-z]{3,9}\.? \d{4})$/;
+const MONTH_DAY_YEAR = /^([A-Za-z]{3,9})\.? (\d{1,2}),? (\d{4})$/;
+const DAY_MONTH_YEAR = /^(\d{1,2}) ([A-Za-z]{3,9})\.?,? (\d{4})$/;
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const monthNumber = (name) => {
+  const k = MONTHS.indexOf(name.slice(0, 3).toLowerCase());
+  // Only real month names ("Sept" and "September" yes, "Janxyz" no).
+  return k >= 0 && /^(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sept?(ember)?|oct(ober)?|nov(ember)?|dec(ember)?)$/i.test(name) ? k + 1 : null;
+};
 
 function utc(y, m, d) {
   if (m < 1 || m > 12 || d < 1 || d > 31) return null;
@@ -43,8 +57,15 @@ function utc(y, m, d) {
   return new Date(t).getUTCDate() === d ? t : null;
 }
 
-/** Parse common date formats into UTC milliseconds. Returns null when not a date. */
-export function parseDate(raw) {
+/**
+ * Parse common date formats into UTC milliseconds. Returns null when not a date.
+ * `dayFirst` decides 01/02/2024: true → 1 February, false → 2 January, null → per value
+ * (month first unless the first number can't be a month). Whole columns decide it once,
+ * in convertValues, so every row of a column is read the same way.
+ * Everything is UTC (including date-times without a time zone), so results don't depend
+ * on the computer's time zone.
+ */
+export function parseDate(raw, dayFirst = null) {
   if (raw == null) return null;
   const s = String(raw).trim();
   let m;
@@ -52,14 +73,48 @@ export function parseDate(raw) {
   if ((m = DMY_OR_MDY.exec(s))) {
     const a = +m[1];
     const b = +m[2];
-    // Assume month/day/year unless the first number can't be a month.
-    return a > 12 ? utc(+m[3], b, a) : utc(+m[3], a, b);
+    const first = dayFirst ?? a > 12;
+    return first ? utc(+m[3], b, a) : utc(+m[3], a, b);
   }
-  if (ISO_DATETIME.test(s) || NAMED_MONTH.test(s)) {
-    const t = Date.parse(s.replace(' ', 'T'));
+  if ((m = MONTH_DAY_YEAR.exec(s))) {
+    const month = monthNumber(m[1]);
+    return month ? utc(+m[3], month, +m[2]) : null;
+  }
+  if ((m = DAY_MONTH_YEAR.exec(s))) {
+    const month = monthNumber(m[2]);
+    return month ? utc(+m[3], month, +m[1]) : null;
+  }
+  if (ISO_DATETIME.test(s)) {
+    const iso = s.replace(' ', 'T');
+    const t = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/.test(iso) ? iso : `${iso}Z`);
     return Number.isFinite(t) ? t : null;
   }
   return null;
+}
+
+/**
+ * Decide once for a column whether 01/02/2024-style dates are day-first. Day-first when any
+ * value's first number is over 12 (31/12/2023), or when they use dots (European style),
+ * unless some value's second number is over 12 (then it must be month-first).
+ */
+export function detectDayFirst(raws) {
+  let dayFirst = false;
+  let monthFirst = false;
+  let dots = 0;
+  let seen = 0;
+  for (const r of raws) {
+    if (r == null) continue;
+    const m = DMY_OR_MDY.exec(String(r).trim());
+    if (!m) continue;
+    seen++;
+    if (+m[1] > 12) dayFirst = true;
+    if (+m[2] > 12) monthFirst = true;
+    if (String(r).includes('.')) dots++;
+  }
+  if (!seen || (dayFirst && monthFirst)) return null;
+  if (dayFirst) return true;
+  if (monthFirst) return false;
+  return dots > seen / 2 ? true : null;
 }
 
 export function parseBoolean(raw) {
@@ -86,7 +141,10 @@ export function inferType(raws) {
   const share = (parse) => sample.reduce((n, s) => n + (parse(s) != null ? 1 : 0), 0) / sample.length;
 
   if (share(parseBoolean) === 1) return 'boolean';
-  if (share(parseNumber) >= 0.95) return 'number';
+  // Codes such as ZIP codes ("01234") or long IDs aren't quantities: as numbers they would
+  // lose leading zeros or digits, so they stay as labels.
+  const codeLike = sample.reduce((n, s) => n + (/^[-+]?0\d/.test(s) || /^\d{16,}$/.test(s) ? 1 : 0), 0);
+  if (share(parseNumber) >= 0.95 && codeLike / sample.length < 0.05) return 'number';
   if (share(parseDate) >= 0.95) return 'date';
 
   const unique = new Set(present).size;
@@ -104,6 +162,10 @@ const PARSERS = {
 };
 
 export function convertValues(raws, type) {
+  if (type === 'date') {
+    const dayFirst = detectDayFirst(raws);
+    return raws.map((r) => (isMissingRaw(r) ? null : parseDate(r, dayFirst)));
+  }
   const parse = PARSERS[type];
   return raws.map((r) => (isMissingRaw(r) ? null : parse(r)));
 }

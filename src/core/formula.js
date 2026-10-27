@@ -24,6 +24,8 @@ const math = (fn) => (...args) => {
 };
 
 /** Functions available in formulas, with help text shown in the UI. */
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 export const FUNCTIONS = {
   if: { args: 'condition, then, else', help: 'Pick a value based on a condition.', min: 3, max: 3, lazy: true },
   round: { args: 'number, digits', help: 'Round to a number of decimal places (default 0).', min: 1, max: 2, fn: (x, d = 0) => math((a, b) => { const f = 10 ** b; return Math.round(a * f) / f; })(x, d) },
@@ -253,7 +255,7 @@ function evaluate(node, row) {
       if (op === '!=' || op === '<>') return !equal(a, b);
       if (op === '+' && (typeof a === 'string' || typeof b === 'string')) return str(a) + str(b);
       if (['<', '<=', '>', '>='].includes(op) && typeof a === 'string' && typeof b === 'string') {
-        const c = a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+        const c = collator.compare(a, b);
         return { '<': c < 0, '<=': c <= 0, '>': c > 0, '>=': c >= 0 }[op];
       }
       const x = num(a);

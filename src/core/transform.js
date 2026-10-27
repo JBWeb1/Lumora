@@ -69,10 +69,12 @@ export function searchRows(dataset, indices, query) {
   return indices.filter((i) => dataset.columns.some((c) => String(c.raw[i]).toLowerCase().includes(q)));
 }
 
+// One shared collator: localeCompare with options builds a new one on every call, which made
+// sorting a big text column take close to a minute.
+export const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 function compareValues(a, b) {
-  if (typeof a === 'string' || typeof b === 'string') {
-    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
-  }
+  if (typeof a === 'string' || typeof b === 'string') return collator.compare(String(a), String(b));
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
@@ -147,7 +149,7 @@ const NATURAL_SEQUENCES = [
   ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
   ['Q1', 'Q2', 'Q3', 'Q4'],
 ];
-const RANGE_LABEL = /^(-?\d+(?:\.\d+)?(?:e[-+]?\d+)?) – -?\d/;
+const RANGE_LABEL = /^(-?\d+(?:\.\d+)?(?:e[-+]?\d+)?) ?– ?-?\d/;
 const LAST = new Set(['(missing)', 'Other']);
 
 export function naturalOrder(keys) {
@@ -242,7 +244,10 @@ export function formatValue(v, type) {
 }
 
 function csvCell(v) {
-  const s = v == null ? '' : String(v);
+  let s = v == null ? '' : String(v);
+  // Spreadsheets run cells that start with = + - @ as formulas. A value from an untrusted file
+  // such as =HYPERLINK(...) must stay text, so it gets a leading apostrophe. Numbers like -5 don't.
+  if (/^[=+\-@\t\r]/.test(s) && parseNumber(s) == null) s = `'${s}`;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

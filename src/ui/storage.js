@@ -1,7 +1,8 @@
-// Saves projects in the browser's IndexedDB so work survives reloads and updates.
+// Saves projects and forms in the browser's IndexedDB so work survives reloads and updates.
 //
-// Two stores: `projects` holds the small, frequently-changing part (settings, report),
-// `data` holds the rows and cleaning steps, which are rewritten only when they change.
+// Stores: `projects` holds the small, frequently-changing part (settings, report),
+// `data` holds the rows and cleaning steps, which are rewritten only when they change,
+// and `forms` holds each form made in the form maker together with its responses.
 // Every function fails softly: if storage is unavailable (private mode, quota), the
 // app keeps working and simply can't remember projects.
 
@@ -12,11 +13,12 @@ let dbPromise = null;
 function open() {
   if (!('indexedDB' in globalThis)) return Promise.reject(new Error('Storage unavailable'));
   dbPromise ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 2);
+    const req = indexedDB.open(DB, 3);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('data')) db.createObjectStore('data', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('forms')) db.createObjectStore('forms', { keyPath: 'id' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -71,4 +73,23 @@ export function deleteProject(id) {
     projects.delete(id);
     store.delete(id);
   });
+}
+
+// ---------- forms: { id, form, responses, updated } ----------
+
+export function saveFormRecord(record) {
+  return run('forms', 'readwrite', (s) => s.put({ ...record, id: record.form.id, updated: new Date().toISOString() }));
+}
+
+export async function listFormRecords() {
+  try {
+    const all = await run('forms', 'readonly', (s) => s.getAll());
+    return all.sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+  } catch {
+    return [];
+  }
+}
+
+export function deleteFormRecord(id) {
+  return run('forms', 'readwrite', (s) => s.delete(id));
 }

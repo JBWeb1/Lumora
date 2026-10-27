@@ -29,6 +29,9 @@ import { isNativeApp } from './ui/native.js';
 import { healthCheck, healthScore } from './core/health.js';
 import { isPortable, isRecipe, makeRecipe, recipeFits, recipeSteps } from './core/recipe.js';
 import { rankCommands } from './core/palette.js';
+import { FORM_KIND } from './core/forms.js';
+import { createFormsUI } from './ui/forms-ui.js';
+import { decodeText, isLumoraFile } from './core/encoding.js';
 
 // ---------- state ----------
 
@@ -67,6 +70,7 @@ const state = {
   ask: { question: '', parsed: null },
   drivers: { target: null },
   recipeOffer: null, // a saved cleaning recipe that fits the file just opened
+  page: null, // null (home or workspace) | 'forms' (form maker) | 'respond' (filling in a shared form)
 };
 
 let indices = [];
@@ -214,6 +218,7 @@ function loadDataset(ds, overview = null) {
   state.original = ds;
   state.steps = [];
   state.dataset = ds;
+  state.page = null;
   state.clean = {};
   state.addingFilter = null;
   state.projectId = newProjectId();
@@ -243,6 +248,16 @@ function loadText(text, fileName) {
       }
       if (isProject(json)) {
         openProject(json, { imported: true });
+        return true;
+      }
+      if (json?.kind === 'lumora-responses') {
+        toast('That’s a file of form answers. Open the form in the form maker, then Responses → Import answers → Choose responses files.', 'info');
+        return true;
+      }
+      if (json?.kind === FORM_KIND) {
+        formsUI.openFormFile(json);
+        state.page = 'respond';
+        render();
         return true;
       }
       if (isRecipe(json)) {
@@ -327,27 +342,25 @@ function readOnPage(file) {
           resolve({ dataset: buildDataset(sheets.length > 1 ? `${base} · ${sheet.name}` : base, sheet.headers, sheet.rows) });
           return;
         }
-        const text = String(reader.result);
-        if (/^\s*\{/.test(text)) {
-          try {
-            const json = JSON.parse(text);
-            if (isProject(json)) return resolve({ project: json });
-          } catch {
-            /* not a project; parse as data below */
-          }
-        }
+        const text = decodeText(reader.result);
+        if (isLumoraFile(text)) return resolve(lumoraResult(text));
         resolve({ dataset: datasetFromText(text, file.name) });
       } catch (err) {
         reject(err);
       }
     };
-    if (excel) reader.readAsArrayBuffer(file);
-    else reader.readAsText(file);
+    reader.readAsArrayBuffer(file);
   });
 }
 
+/** A Lumora JSON file: a project to open, or something else (recipe, form, responses) for loadText. */
+function lumoraResult(text) {
+  const json = JSON.parse(text);
+  return isProject(json) ? { project: json } : { lumoraText: text };
+}
+
 /**
- * Read any supported file. Resolves { dataset } or { project }, or null when cancelled
+ * Read any supported file. Resolves { dataset }, { project } or { lumoraText }, or null when cancelled
  * or failed (the person has already been told why).
  */
 async function readFile(file, { allowProject = true } = {}) {
@@ -369,7 +382,7 @@ async function readFile(file, { allowProject = true } = {}) {
       result = await readOnPage(file);
       if (!result) return null;
     } else if (result.kind === 'project') {
-      result = { project: JSON.parse(result.text) };
+      result = lumoraResult(result.text);
     } else if (result.kind === 'sheets') {
       progress.hide();
       const index = await chooseSheet(file.name, result.sheets);
@@ -380,7 +393,7 @@ async function readFile(file, { allowProject = true } = {}) {
       progress.show();
       result = await result.pick(index);
     }
-    if (result.project && !allowProject) throw new Error('that is a Lumora project file, not a data file.');
+    if ((result.project || result.lumoraText) && !allowProject) throw new Error('that is a Lumora file (a project, recipe or form), not a data file.');
     if (result.dataset && (!result.dataset.columns.length || !result.dataset.rowCount)) throw new Error('no rows found. Is the first line a header row?');
     return result;
   } catch (err) {
@@ -396,7 +409,8 @@ async function loadFile(file) {
   const result = await readFile(file);
   if (!result) return;
   try {
-    if (result.project) openProject(result.project, { imported: true });
+    if (result.lumoraText) loadText(result.lumoraText, file.name);
+    else if (result.project) openProject(result.project, { imported: true });
     else loadDataset(result.dataset, result.overview);
   } catch (err) {
     toast(`Couldn't open ${file.name}: ${err.message}`);
@@ -430,6 +444,11 @@ async function loadFiles(fileList) {
 
 function loadSample(id) {
   const sample = SAMPLES.find((s) => s.id === id);
+  if (!sample) {
+    toast(`There's no practice dataset called "${id}".`);
+    render();
+    return false;
+  }
   const ok = loadText(sampleCSV(id), `${sample.name}.csv`);
   // Practice data never offers your own cleaning recipes.
   if (ok && state.recipeOffer) {
@@ -480,6 +499,13 @@ function renderHome() {
       el('p', { class: 'lead' }, 'Lumora reads your spreadsheet, explains what is inside in plain English, and helps you build the right chart, even if you have never studied statistics.'),
       drop),
     recentWorkSection(),
+    el('section', { class: 'collect' },
+      el('div', { class: 'card collect-card' },
+        el('div', { class: 'emoji', 'aria-hidden': 'true' }, '📝'),
+        el('div', { class: 'grow' },
+          el('h2', {}, 'No data yet? Collect your own'),
+          el('p', { class: 'muted' }, 'Make a custom form (survey, sign-up sheet, stock count, expense log), fill it in or share a link, and analyse the answers here.')),
+        el('button', { class: 'btn primary', type: 'button', onclick: openFormMaker }, 'Open the form maker'))),
     el('section', {},
       el('h2', {}, 'Or start with practice data'),
       el('div', { class: 'cards' }, SAMPLES.map((s) =>
@@ -729,8 +755,11 @@ function renderTable() {
   const wrap = el('div', { class: 'table-view' });
   const body = el('div');
   const draw = () => {
-    let rows = searchRows(state.dataset, indices, t.search);
-    if (t.sort != null) rows = sortIndices(state.dataset, rows, t.sort, t.dir);
+    // Remembered per search and sort, so paging through a big table doesn't re-sort every row.
+    const rows = memo(indices, `table:${t.search}\u0001${t.sort}\u0001${t.dir}`, () => {
+      const found = searchRows(state.dataset, indices, t.search);
+      return t.sort != null ? sortIndices(state.dataset, found, t.sort, t.dir) : found;
+    });
     const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
     t.page = Math.min(t.page, pages - 1);
     const pageRows = rows.slice(t.page * PAGE_SIZE, (t.page + 1) * PAGE_SIZE);
@@ -1707,6 +1736,7 @@ async function saveNow() {
 
 function openProject(json, { imported = false } = {}) {
   const p = deserializeProject(json);
+  state.page = null;
   state.original = p.original;
   state.steps = p.steps;
   state.dataset = p.dataset;
@@ -2032,20 +2062,102 @@ function renderLearn() {
 
 // ---------- shell ----------
 
+/**
+ * Describe the focused control so the same control can be focused again after a re-render
+ * (otherwise keyboard and screen-reader users are thrown back to the top of the page).
+ */
+function focusKey() {
+  const a = document.activeElement;
+  if (!a || a === document.body || !$app.contains(a)) return null;
+  if (a.id) return { selector: `#${CSS.escape(a.id)}` };
+  const label = a.getAttribute('aria-label');
+  if (label) return { selector: `${a.tagName.toLowerCase()}[aria-label="${CSS.escape(label)}"]` };
+  if (a.tagName === 'BUTTON') return { selector: 'button', text: a.textContent.trim() };
+  return null;
+}
+
+function restoreFocus(key) {
+  if (!key || (document.activeElement && document.activeElement !== document.body)) return;
+  const matches = [...$app.querySelectorAll(key.selector)];
+  const target = key.text == null ? matches[0] : matches.find((n) => n.textContent.trim() === key.text);
+  target?.focus({ preventScroll: true });
+}
+
 function render() {
   const scrollY = window.scrollY;
-  const loaded = !!state.dataset;
-  $name.textContent = loaded ? state.dataset.name : '';
-  $name.hidden = !loaded;
-  document.getElementById('home-btn').hidden = !loaded;
+  const focus = focusKey();
+  const loaded = !!state.dataset && !state.page;
+  $name.textContent = loaded ? state.dataset.name : state.page === 'forms' ? 'Form maker' : '';
+  $name.hidden = !loaded && state.page !== 'forms';
+  document.getElementById('home-btn').hidden = !loaded && !state.page;
   document.getElementById('save-btn').hidden = !loaded;
-  clear($app).append(loaded ? renderWorkspace() : renderHome());
-  if (loaded) window.scrollTo(0, scrollY);
+  let view;
+  if (state.page === 'forms') view = formsUI.render();
+  else if (state.page === 'respond') view = formsUI.renderRespond();
+  else view = loaded ? renderWorkspace() : renderHome();
+  clear($app).append(view);
+  window.scrollTo(0, scrollY);
+  restoreFocus(focus);
 }
+
+// ---------- form maker ----------
+
+const formsUI = createFormsUI({
+  toast,
+  plural,
+  openDialog,
+  closeDialog: () => $dialog.close(),
+  rerender: () => render(),
+  analyze: (ds) => {
+    if (!ds.rowCount) {
+      toast('There are no responses to analyse yet.');
+      return;
+    }
+    loadDataset(ds);
+    toast(`Analysing ${plural(ds.rowCount, 'response')} to “${ds.name}”.`, 'info');
+  },
+  leave: () => leaveRespondPage(),
+  showForms: () => {
+    state.page = 'forms';
+    render();
+  },
+});
+
+function openFormMaker() {
+  state.page = 'forms';
+  formsUI.openList();
+  render();
+  window.scrollTo(0, 0);
+}
+
+function leaveRespondPage() {
+  if (location.hash.startsWith('#form=')) history.replaceState(null, '', location.pathname + location.search);
+  state.page = null;
+  render();
+}
+
+function openSharedFormFromHash() {
+  if (!location.hash.startsWith('#form=')) return false;
+  formsUI.openRespondFromLink(location.hash.slice('#form='.length));
+  state.page = 'respond';
+  render();
+  window.scrollTo(0, 0);
+  return true;
+}
+window.addEventListener('hashchange', openSharedFormFromHash);
 
 document.getElementById('open-btn').addEventListener('click', () => $fileInput.click());
 document.getElementById('save-btn').addEventListener('click', saveProjectFile);
 document.getElementById('home-btn').addEventListener('click', async () => {
+  if (state.page) {
+    // From the form maker or a shared form, go back to the data (or the start screen).
+    if (state.page === 'respond') leaveRespondPage();
+    else {
+      state.page = null;
+      render();
+    }
+    return;
+  }
   await saveNow();
   state.dataset = null;
   store.set('openProject', null);
@@ -2140,6 +2252,7 @@ function paletteCommands() {
     });
   }
   add('App', '📂', 'Open a file', () => $fileInput.click(), 'load import csv excel');
+  add('App', '📝', 'Form maker: make a form to collect data', openFormMaker, 'survey questionnaire collect sign up');
   add('App', '◐', 'Switch dark / light mode', () => $theme.click(), 'theme');
   add('App', '💡', `${state.learn ? 'Turn off' : 'Turn on'} Learn mode`, () => $learn.click(), 'explanations tips');
   add('App', '★', "What's new", () => showWhatsNew(), 'changelog version');
@@ -2302,11 +2415,14 @@ if (lastSeen && compareVersions(VERSION, lastSeen) > 0) {
 store.set('version', VERSION);
 
 // Expose for debugging and automated tests.
-window.lumora = { state, loadText, loadSample, addStep, undo, saveNow, version: VERSION };
+window.lumora = { state, loadText, loadSample, addStep, undo, saveNow, openFormMaker, version: VERSION };
 
 const params = new URLSearchParams(location.search);
 const reopen = store.get('openProject', null);
-if (params.get('sample')) loadSample(params.get('sample'));
+if (openSharedFormFromHash()) {
+  // Someone opened a shared form: show only the form, not the owner's last project.
+} else if (params.get('form') === 'new') openFormMaker();
+else if (params.get('sample')) loadSample(params.get('sample'));
 else if (reopen) {
   render();
   loadProject(reopen)

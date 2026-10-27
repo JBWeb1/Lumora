@@ -103,6 +103,8 @@ export function describe(xs) {
 }
 
 /** Count how often each value occurs, most common first. */
+const byText = new Intl.Collator();
+
 export function frequencies(values) {
   const counts = new Map();
   for (const v of values) {
@@ -111,7 +113,7 @@ export function frequencies(values) {
   }
   return [...counts.entries()]
     .map(([value, count]) => ({ value, count }))
-    .sort((a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value)));
+    .sort((a, b) => b.count - a.count || byText.compare(String(a.value), String(b.value)));
 }
 
 function decimalsFor(step) {

@@ -5,6 +5,7 @@ import { buildDataset, datasetFromText } from './core/infer.js';
 import { readXlsx } from './core/xlsx.js';
 import { packDataset } from './core/pack.js';
 import { overviewData } from './core/overview.js';
+import { decodeText, isLumoraFile } from './core/encoding.js';
 
 let sheets = null;
 let baseName = '';
@@ -38,9 +39,9 @@ self.onmessage = async ({ data: msg }) => {
         send(buildSheet(sheets[0]));
         return;
       }
-      const text = await file.text();
-      // Lumora project files are handled by the page (they restore settings too).
-      if (/^\s*\{\s*"format"\s*:\s*"lumora-project"/.test(text.slice(0, 200))) {
+      const text = decodeText(await file.arrayBuffer());
+      // Lumora's own files (projects, recipes, forms) are handled by the page.
+      if (isLumoraFile(text)) {
         self.postMessage({ type: 'project', text });
         return;
       }

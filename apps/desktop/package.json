@@ -1,7 +1,7 @@
 {
   "name": "lumora-desktop",
   "productName": "Lumora",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Lumora: friendly data analysis that runs on your computer.",
   "author": { "name": "Lumora", "email": "lumora@users.noreply.github.com" },
   "homepage": "https://github.com/JBWeb1/Lumora",

@@ -1,10 +1,23 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '0.8.0',
+    date: '2026-10-27',
+    items: [
+      'Form maker: design your own forms (short and long answers, numbers, dates, ratings, yes/no, one or several choices), start from five templates, and collect answers on this device or by sharing a link. No account or server: people send back a short answer code, which you import. Then analyse every answer in one click.',
+      'Dates are read the same way for a whole column (31.12.2023 style dates no longer flip to month-first on 01.02.2024), and dates such as "Jan 5, 2023" no longer shift by a day in some time zones.',
+      'Files saved by Excel on Windows (Windows-1252 or Unicode text) open with accents and £ signs intact.',
+      'ZIP codes and long IDs keep their leading zeros and digits; accounting negatives like (1,234) are read as numbers.',
+      'Sorting large tables is much faster, and number bar charts are in numeric order.',
+      'CSV exports can no longer carry spreadsheet formulas from untrusted data.',
+      'Opening a recipe or form file with "Open file" now works, and keyboard focus stays in place when the screen updates.',
+    ],
+  },
   {
     version: '0.7.0',
     date: '2026-10-16',

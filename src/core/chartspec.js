@@ -181,7 +181,9 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
       bars.sort((a, b) => b.value - a.value);
     }
     if (!bars.length) return { error: 'Nothing to plot.' };
-    if (xCol.type === 'number' || xCol.type === 'date') bars.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+    // Sort by the actual value: text sorting puts -5 before -10 and 1.5 before 1.25.
+    if (xCol.type === 'number') bars.sort((a, b) => (Number(a.label) - Number(b.label)) || 0);
+    else if (xCol.type === 'date') bars.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
     else if (bars.length <= MAX_BARS) {
       // Ranges, months, weekdays and quarters read best in their own order.
       const order = naturalOrder(bars.map((x) => x.label));
