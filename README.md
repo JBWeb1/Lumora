@@ -15,6 +15,9 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 - **Export to Excel.** Data, summaries, pivot tables and charts export as real `.xlsx` files: typed cells (numbers, dates, yes/no), a bold, filterable, frozen header row, and **native, editable Excel charts** next to the data. Lumora detects the delimiter and works out each column's type: number, date, yes/no, category or text. You can override any type with one click.
 - **Ask questions in plain English.** For example "which weekday has the most customers", "total revenue on rainy days", "exam score over time" or "what drives exam score". You get a one-line answer, a table and a chart. Lumora always shows how it understood the question, so you can check it. It runs fully on-device, with no AI service and no data sent anywhere. Press `/` to ask from anywhere.
 - **Key drivers.** Pick a column and see every other column ranked by how much of its variation it explains, with plain-English explanations and a reminder that related does not mean caused.
+- **Dashboards.** Switch the Report tab to *Dashboard* to see pinned items as tiles, filter every tile with one click, present full screen, or save a self-contained web page.
+- **Describe this data in words.** A short written summary (quality, trend, latest change, where it comes from, what goes with it) that you can add to the report and edit.
+- **More charts.** One line per group, stacked bars, and a calendar heatmap; notes on line charts; *Show the numbers* under every chart; units ($, %) in chart labels.
 - **Reports.** Pin charts, summaries, answers and key drivers, add notes, reorder them, then print or save as PDF. Report items stay live, so they update when the data is cleaned and follow renamed columns.
 - **Auto-save and projects.** Work is saved in the browser as you go and listed under "Continue where you left off" on the start screen. **Save project** downloads a `.lumora` file (data, cleaning steps, settings and report) that you can reopen or share.
 - **Automatic insights.** It finds missing data, strong correlations, outliers, skewed columns, big differences between groups, ID columns and date ranges. A **Show me →** button opens the chart that proves each finding.
@@ -106,6 +109,7 @@ src/core/                 Pure, tested logic (no DOM):
   palette.js                command palette matching (Ctrl+K)
   forms.js                  form maker: questions, validation, share links, answer codes
   analyses.js               change breakdown, group comparison, unusual days, 80/20, text themes
+  story.js                  plain-English summary of a dataset
   analyses-more.js          natural groups, what-if model, return rates, funnels, trend/pattern, delayed effects
   encoding.js               file encodings (UTF-8, Windows-1252, UTF-16)
   formula.js                safe formula parser/evaluator for calculated columns

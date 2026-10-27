@@ -13,7 +13,7 @@ import { CHART_TYPES, buildChartData, suggestChart } from './core/chartspec.js';
 import { GLOSSARY, LESSONS } from './core/learn.js';
 import { SAMPLES, sampleCSV } from './core/samples.js';
 import { el, appendTo, clear, select, download, installTooltip } from './ui/dom.js';
-import { renderChart, heatmap, sparkHistogram } from './ui/charts.js';
+import { renderChart, chartWithTable, heatmap, sparkHistogram } from './ui/charts.js';
 import { exportChart } from './ui/export.js';
 import { initUpdates, watchInstallPrompt, compareVersions } from './ui/updates.js';
 import { VERSION, CHANGELOG } from './version.js';
@@ -32,6 +32,7 @@ import { rankCommands } from './core/palette.js';
 import { FORM_KIND } from './core/forms.js';
 import { createFormsUI } from './ui/forms-ui.js';
 import { createAnalysesUI, TOOLS as ANALYSIS_TOOLS } from './ui/analyses-ui.js';
+import { summaryText, writeSummary } from './core/story.js';
 import { decodeText, isLumoraFile } from './core/encoding.js';
 
 // ---------- state ----------
@@ -72,6 +73,8 @@ const state = {
   drivers: { target: null },
   recipeOffer: null, // a saved cleaning recipe that fits the file just opened
   page: null, // null (home or workspace) | 'forms' (form maker) | 'respond' (filling in a shared form)
+  reportMode: 'report', // 'report' | 'dashboard'
+  dashboardFilter: { column: null, value: null }, // one-click filter applied to every dashboard tile
 };
 
 let indices = [];
@@ -653,6 +656,7 @@ function renderOverview() {
     healthBanner(),
     renderAsk(),
     quickQuestions(),
+    el('div', { class: 'overview-actions' }, el('button', { class: 'btn small', type: 'button', onclick: showSummary }, '✍ Describe this data in words')),
     el('div', { class: 'kpis' },
       kpi('Rows', indices.length.toLocaleString('en-US')),
       kpi('Columns', c.length),
@@ -785,7 +789,7 @@ function openProfile(index) {
   }
   openDialog(col.name,
     el('table', { class: 'profile-table' }, el('tbody', {}, rows.map(([k, v, t]) => el('tr', {}, el('th', {}, t ? termLink(t, k) : k), el('td', {}, String(v)))))),
-    chartData && !chartData.error && el('div', { class: 'chart-wrap' }, renderChart(chartData)),
+    chartData && !chartData.error && chartWithTable(chartData),
     el('div', { class: 'dialog-actions' },
       el('button', { class: 'btn primary small', onclick: () => { $dialog.close(); state.chart = { type: 'auto', x: index, y: null, agg: 'mean', color: null }; state.tab = 'chart'; render(); } }, 'Open in chart builder'),
       el('button', { class: 'btn small', onclick: () => { $dialog.close(); state.table.sort = index; state.table.dir = 'desc'; state.tab = 'table'; render(); } }, 'Sort table by this column')));
@@ -864,11 +868,13 @@ function renderChartTab() {
   const yCol = ch.y == null ? null : c[ch.y];
   const suggestion = suggestChart(xCol, yCol);
   const type = ch.type === 'auto' ? suggestion.type : ch.type;
-  let data = type ? buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg, color: ch.color }) : { error: suggestion.reason };
+  // Bars split by a colour column become stacked bars.
+  const drawType = type === 'bar' && ch.color != null ? 'stacked' : type;
+  let data = type ? buildChartData(state.dataset, indices, { type: drawType, x: ch.x, y: ch.y, agg: ch.agg, color: ch.color, notes: ch.notes }) : { error: suggestion.reason };
   // Forecasts need a date axis; the date grouping (day/month/year) decides the sensible horizons.
   const canForecast = type === 'line' && data.xIsDate && HORIZONS[data.unit];
   const horizon = canForecast && ch.forecast ? (HORIZONS[data.unit].some(([h]) => h === ch.forecast) ? ch.forecast : DEFAULT_HORIZON[data.unit]) : null;
-  if (horizon) data = buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg, forecast: horizon });
+  if (horizon && ch.color == null) data = buildChartData(state.dataset, indices, { type, x: ch.x, y: ch.y, agg: ch.agg, forecast: horizon, notes: ch.notes });
   const usesAgg = yCol?.type === 'number' && (type === 'bar' || type === 'line');
   const colOptions = c.map((col, i) => ({ value: i, label: `${TYPE_ICONS[col.type]}  ${col.name}` }));
 
@@ -878,20 +884,22 @@ function renderChartTab() {
     field('Y axis (optional)', select([{ value: '', label: '— none —' }, ...colOptions], ch.y ?? '', (v) => { ch.y = v === '' ? null : +v; render(); })),
     field('Chart type', select([{ value: 'auto', label: `✨ Auto (${CHART_TYPES[suggestion.type]?.label ?? '–'})` }, ...Object.entries(CHART_TYPES).map(([k, v]) => ({ value: k, label: v.label }))], ch.type, (v) => { ch.type = v; render(); })),
     usesAgg && field('Combine values with', select(Object.entries(AGGREGATIONS).filter(([k]) => k !== 'distinct').map(([k, v]) => ({ value: k, label: v.label })), ch.agg, (v) => { ch.agg = v; render(); })),
-    type === 'scatter' && field('Color by (optional)', select(
+    ['scatter', 'line', 'bar', 'stacked'].includes(type) && field(type === 'scatter' ? 'Color by (optional)' : type === 'line' ? 'One line per (optional)' : 'Split bars by (optional)', select(
       [{ value: '', label: '— none —' }, ...c.map((col, i) => ({ col, i })).filter(({ col }) => col.type === 'category' || col.type === 'boolean').map(({ col, i }) => ({ value: i, label: col.name }))],
       ch.color ?? '', (v) => { ch.color = v === '' ? null : +v; render(); })),
     canForecast && field('Forecast', select([{ value: '', label: 'Off' }, ...HORIZONS[data.unit].map(([h, label]) => ({ value: h, label: `Next ${label}` }))], horizon ?? '', (v) => { ch.forecast = v === '' ? null : +v; render(); }, { 'aria-label': 'Forecast' })));
 
-  const chartEl = data.error ? null : renderChart(data);
+  const block = data.error ? null : chartWithTable(data);
+  const chartEl = block?.querySelector('svg.chart') ?? null;
   const title = data.error ? '' : [data.yLabel ?? data.valueLabel, data.xLabel ?? data.groupLabel].filter(Boolean).join(' by ');
   return el('div', { class: 'chart-view' },
     controls,
     el('div', { class: 'card chart-card' },
       ch.type === 'auto' && type && el('p', { class: 'why' }, el('strong', {}, 'Why this chart? '), suggestion.reason),
       data.error ? el('div', { class: 'empty' }, data.error) : [
-        el('div', { class: 'chart-wrap' }, chartEl),
+        block,
         chartNotes(data),
+        type === 'line' && data.xIsDate && chartNoteEditor(ch),
         el('div', { class: 'chart-export' },
           el('span', { class: 'muted small' }, 'Download chart:'),
           el('button', { class: 'btn small', type: 'button', onclick: () => exportChart(chartEl, `${state.dataset.name} ${title}`, 'png') }, '⇩ PNG'),
@@ -903,12 +911,39 @@ function renderChartTab() {
     type && learnTip(CHART_TYPES[type].term));
 }
 
+/** Notes pinned to dates on a line chart, e.g. "price change" or "new menu". */
+function chartNoteEditor(ch) {
+  const notes = ch.notes ?? [];
+  const draft = { date: '', text: '' };
+  return el('div', { class: 'note-editor' },
+    notes.length > 0 && el('ul', { class: 'note-list' }, notes.map((n, k) => el('li', {},
+      el('strong', {}, formatDate(Date.parse(`${n.date}T00:00:00Z`))), ` ${n.text} `,
+      el('button', { class: 'icon-btn', type: 'button', 'aria-label': `Remove note ${n.text}`, onclick: () => { ch.notes = notes.filter((_, j) => j !== k); render(); scheduleSave(); } }, '✕')))),
+    el('form', {
+      class: 'form-row', onsubmit: (e) => {
+        e.preventDefault();
+        if (!draft.date || !draft.text.trim()) return toast('Pick a date and type the note.');
+        ch.notes = [...notes, { date: draft.date, text: draft.text.trim() }];
+        render();
+        scheduleSave();
+      },
+    },
+    el('span', { class: 'muted small' }, 'Add a note to the chart:'),
+    el('input', { type: 'date', 'aria-label': 'Note date', oninput: (e) => { draft.date = e.target.value; } }),
+    el('input', { type: 'text', placeholder: 'e.g. new menu launched', 'aria-label': 'Note text', oninput: (e) => { draft.text = e.target.value; } }),
+    el('button', { class: 'btn small', type: 'submit' }, 'Add note')));
+}
+
 /** One sheet holding a chart's data plus the matching editable Excel chart. */
 function chartSheet(data, title) {
   const chart = (type, valueColumns, extra = {}) => ({ type, title, valueColumns, xTitle: data.xLabel ?? data.groupLabel, yTitle: data.yLabel ?? data.valueLabel, ...extra });
   switch (data.type) {
     case 'bar':
       return { name: 'Chart data', headers: [data.xLabel, data.valueLabel], types: ['text', 'number'], rows: data.bars.map((b) => [b.label, b.value]), chart: chart('bar', [1]) };
+    case 'stacked':
+      return { name: 'Chart data', headers: [data.xLabel, ...data.legend.map((l) => l.label)], types: ['text', ...data.legend.map(() => 'number')], rows: data.bars.map((b) => [b.label, ...b.parts]), chart: chart('bar', data.legend.map((_, k) => k + 1)) };
+    case 'calendar':
+      return { name: 'Chart data', headers: ['Date', data.valueLabel], types: ['date', 'number'], rows: data.cells.filter((c) => c.value != null).map((c) => [c.day, c.value]), chart: chart('line', [1]) };
     case 'histogram':
       return { name: 'Chart data', headers: [`${data.xLabel} range`, 'Rows'], types: ['text', 'number'], rows: data.bins.map((b) => [`${formatNumber(b.x0)} to ${formatNumber(b.x1)}`, b.count]), chart: chart('bar', [1], { yTitle: 'Rows' }) };
     case 'scatter':
@@ -920,6 +955,11 @@ function chartSheet(data, title) {
         chart: chart('bar', [4], { title: `Median ${data.valueLabel}`, yTitle: `median ${data.valueLabel}` }),
       };
     default: {
+      if (data.series) {
+        const xs = [...new Set(data.series.flatMap((s) => s.points.map((p) => p.x)))].sort((a, b) => a - b);
+        const lookup = data.series.map((s) => new Map(s.points.map((p) => [p.x, p.y])));
+        return { name: 'Chart data', headers: [data.xLabel, ...data.series.map((s) => s.label)], types: [data.xIsDate ? 'date' : 'number', ...data.series.map(() => 'number')], rows: xs.map((x) => [x, ...lookup.map((m) => m.get(x) ?? null)]), chart: chart('line', data.series.map((_, k) => k + 1)) };
+      }
       // Line chart, with forecast columns when a forecast is shown.
       const f = data.forecast?.points ?? [];
       const xType = data.xIsDate ? 'date' : 'number';
@@ -1109,7 +1149,7 @@ function renderSummarize() {
           el('thead', {}, el('tr', {}, result.headers.map((h, j) => el('th', { class: j ? 'num' : '' }, h)))),
           el('tbody', {}, result.rows.slice(0, 500).map((r) => el('tr', {}, r.map((v, j) => el('td', { class: j ? 'num' : '' }, j ? formatNumber(v) : String(v)))))))),
       bars && bars.length > 0 && el('div', { class: 'card chart-card' },
-        el('div', { class: 'chart-wrap' }, renderChart({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[firstValueCol], bars: bars.slice(0, 30) })))),
+        chartWithTable({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[firstValueCol], bars: bars.slice(0, 30) }))),
     el('div', { class: 'toolbar' },
       el('span', { class: 'muted' }, pivot ? `${plural(pivot.rowKeys.length, 'row')} × ${plural(pivot.colKeys.length, 'column')}` : plural(result.rows.length, 'group')),
       el('div', { class: 'toolbar-actions' },
@@ -1698,7 +1738,7 @@ function resolveFilters(refs = []) {
   const missing = refs.filter((f) => idxOf(f.column) == null).map((f) => f.column);
   return { filters: refs.filter((f) => idxOf(f.column) != null).map((f) => ({ ...f, column: idxOf(f.column) })), missing };
 }
-const chartRefs = (ch, type) => ({ type: type ?? ch.type, x: nameOf(ch.x), y: nameOf(ch.y), agg: ch.agg, color: nameOf(ch.color), forecast: ch.forecast ?? null, filters: filterRefs(state.filters) });
+const chartRefs = (ch, type) => ({ type: type ?? ch.type, x: nameOf(ch.x), y: nameOf(ch.y), agg: ch.agg, color: nameOf(ch.color), forecast: ch.forecast ?? null, notes: ch.notes ?? [], filters: filterRefs(state.filters) });
 const summarizeRefs = (s) => ({ by: nameOf(s.by), dateUnit: s.dateUnit, cols: nameOf(s.cols), colUnit: s.colUnit ?? 'month', aggs: s.aggs.map((a) => ({ fn: a.fn, column: nameOf(a.column) })), sort: s.sort ?? null, limit: s.limit ?? null, filters: filterRefs(state.filters) });
 
 function viewByNames() {
@@ -1714,7 +1754,7 @@ function viewByNames() {
 
 function restoreView(view = {}) {
   if (view.filters) state.filters = resolveFilters(view.filters).filters;
-  if (view.chart) state.chart = { type: view.chart.type ?? 'auto', x: idxOf(view.chart.x) ?? 0, y: idxOf(view.chart.y), agg: view.chart.agg ?? 'mean', color: idxOf(view.chart.color), forecast: view.chart.forecast ?? null };
+  if (view.chart) state.chart = { type: view.chart.type ?? 'auto', x: idxOf(view.chart.x) ?? 0, y: idxOf(view.chart.y), agg: view.chart.agg ?? 'mean', color: idxOf(view.chart.color), forecast: view.chart.forecast ?? null, notes: view.chart.notes ?? [] };
   if (view.summarize?.by) {
     state.summarize = {
       by: idxOf(view.summarize.by) ?? 0,
@@ -1924,7 +1964,7 @@ function renderAnswer(parsed) {
         el('div', { class: 'scroll-x' }, el('table', { class: 'data-table compact' },
           el('thead', {}, el('tr', {}, result.headers.map((h, j) => el('th', { class: j ? 'num' : '' }, h)))),
           el('tbody', {}, shown.map((row, k) => el('tr', { class: r.limit && k < r.limit ? 'highlight' : '' }, row.map((v, j) => el('td', { class: j ? 'num' : '' }, j ? formatNumber(v) : String(v)))))))),
-        el('div', { class: 'chart-wrap' }, renderChart({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[1], bars: result.rows.slice(0, 15).map((row) => ({ label: String(row[0]), value: row[1] })).filter((b) => Number.isFinite(b.value)) }))),
+        chartWithTable({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[1], bars: result.rows.slice(0, 15).map((row) => ({ label: String(row[0]), value: row[1] })).filter((b) => Number.isFinite(b.value)) })),
       result.rows.length > shown.length && el('p', { class: 'muted small' }, `Showing ${shown.length} of ${result.rows.length} groups.`),
     ];
     actions.push(['Open in Summarize', () => { adoptFilters(); state.summarize = { by: r.by, dateUnit: r.dateUnit ?? 'month', aggs: [{ fn: r.fn, column: r.column }] }; state.tab = 'summarize'; update(); }]);
@@ -1932,7 +1972,7 @@ function renderAnswer(parsed) {
   } else if (r.type === 'chart') {
     let data = buildChartData(state.dataset, rows, { ...r.chart, forecast: null, agg: 'mean' });
     if (r.chart.forecast && data.unit) data = buildChartData(state.dataset, rows, { ...r.chart, agg: 'mean', forecast: DEFAULT_HORIZON[data.unit] });
-    body = data.error ? el('p', {}, data.error) : [el('div', { class: 'chart-wrap' }, renderChart(data)), chartNotes(data)];
+    body = data.error ? el('p', {}, data.error) : [chartWithTable(data), chartNotes(data)];
     actions.push(['Open in Chart builder', () => { adoptFilters(); state.chart = { type: r.chart.type, x: r.chart.x, y: r.chart.y, agg: 'mean', color: null, forecast: r.chart.forecast ?? null }; state.tab = 'chart'; update(); }]);
     actions.push(['📌 Add to report', () => pin({ kind: 'chart', title: parsed.understood, chart: { type: r.chart.type, x: nameOf(r.chart.x), y: nameOf(r.chart.y), agg: 'mean', color: null, filters: filterRefs([...state.filters, ...parsed.filters]) } })]);
   } else if (r.type === 'drivers') {
@@ -1997,10 +2037,10 @@ function pin(item) {
   scheduleSave();
 }
 
-function renderReportItem(item) {
+function renderReportItem(item, { extraFilters = [], tile = false } = {}) {
   const missingCols = (names) => names.filter((n) => n != null && idxOf(n) == null);
   const { filters, missing: missingFilterCols } = resolveFilters(item.filters ?? item.chart?.filters ?? item.summarize?.filters ?? item.drivers?.filters);
-  const rows = applyFilters(state.dataset, filters);
+  const rows = applyFilters(state.dataset, [...filters, ...extraFilters]);
   const c = cols();
   let missing = [...missingFilterCols];
   let content = null;
@@ -2012,8 +2052,9 @@ function renderReportItem(item) {
       const x = idxOf(ch.x);
       const y = idxOf(ch.y);
       const type = ch.type === 'auto' ? suggestChart(c[x], y == null ? null : c[y]).type : ch.type;
-      const data = buildChartData(state.dataset, rows, { type, x, y, agg: ch.agg, color: idxOf(ch.color), forecast: ch.forecast ?? null });
-      content = data.error ? el('p', { class: 'muted' }, data.error) : [el('div', { class: 'chart-wrap' }, renderChart(data)), chartNotes(data)];
+      const drawType = type === 'bar' && idxOf(ch.color) != null ? 'stacked' : type;
+      const data = buildChartData(state.dataset, rows, { type: drawType, x, y, agg: ch.agg, color: idxOf(ch.color), forecast: ch.forecast ?? null, notes: ch.notes });
+      content = data.error ? el('p', { class: 'muted' }, data.error) : [chartWithTable(data), chartNotes(data)];
     }
   } else if (item.kind === 'summary') {
     const s = item.summarize;
@@ -2028,7 +2069,7 @@ function renderReportItem(item) {
         el('div', { class: 'scroll-x' }, el('table', { class: 'data-table compact' },
           el('thead', {}, el('tr', {}, result.headers.map((h, j) => el('th', { class: j ? 'num' : '' }, h)))),
           el('tbody', {}, shown.map((row) => el('tr', {}, row.map((v, j) => el('td', { class: j ? 'num' : '' }, j ? formatNumber(v) : String(v)))))))),
-        result.headers.length > 1 && el('div', { class: 'chart-wrap' }, renderChart({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[1], bars: result.rows.slice(0, 15).map((row) => ({ label: String(row[0]), value: row[1] })).filter((b) => Number.isFinite(b.value)) })));
+        result.headers.length > 1 && chartWithTable({ type: 'bar', xLabel: result.headers[0], valueLabel: result.headers[1], bars: result.rows.slice(0, 15).map((row) => ({ label: String(row[0]), value: row[1] })).filter((b) => Number.isFinite(b.value)) }));
     }
   } else if (item.kind === 'value') {
     missing = missing.concat(missingCols([item.value.column]));
@@ -2046,6 +2087,13 @@ function renderReportItem(item) {
     }
   }
 
+  if (tile) {
+    return el('article', { class: `card dash-tile kind-${item.kind}` },
+      el('h3', {}, item.title || 'Untitled'),
+      missing.length > 0 && el('p', { class: 'pill warn' }, `Column ${[...new Set(missing)].join(', ')} no longer exists.`),
+      item.kind === 'text' ? el('p', { class: 'dash-text' }, item.note ?? '') : content,
+      item.kind !== 'text' && item.note && el('p', { class: 'muted small' }, item.note));
+  }
   const autosize = (ta) => {
     ta.style.height = 'auto';
     ta.style.height = `${ta.scrollHeight + 2}px`;
@@ -2076,14 +2124,103 @@ function renderReportItem(item) {
     note);
 }
 
+/** Columns good for one-click dashboard filters: yes/no or categories with up to 12 values. */
+function dashboardFilterColumns() {
+  return cols().filter((c) => {
+    if (c.type === 'boolean') return true;
+    if (c.type !== 'category') return false;
+    const seen = new Set();
+    for (const i of indices) {
+      if (c.values[i] != null) seen.add(c.values[i]);
+      if (seen.size > 12) return false;
+    }
+    return seen.size >= 2;
+  });
+}
+
+function renderDashboard() {
+  const f = state.dashboardFilter;
+  const options = dashboardFilterColumns();
+  const col = options.find((c) => c.name === f.column) ?? null;
+  const values = col ? (col.type === 'boolean' ? ['yes', 'no'] : frequencies(indices.map((i) => col.values[i])).map((x) => String(x.value))) : [];
+  const extra = col && f.value != null ? [{ column: colIndex(col.name), op: 'is', value: f.value }] : [];
+  const grid = el('div', { class: 'dash-grid' }, state.report.map((item) => renderReportItem(item, { extraFilters: extra, tile: true })));
+  const board = el('div', { class: 'dashboard' },
+    el('div', { class: 'dash-head' },
+      el('h2', {}, state.dataset.name),
+      el('p', { class: 'muted small' }, `${col && f.value != null ? `${col.name}: ${f.value === 'yes' ? 'Yes' : f.value === 'no' ? 'No' : f.value} · ` : ''}${formatDate(Date.now())}`)),
+    options.length > 0 && el('div', { class: 'dash-filters' },
+      select([{ value: '', label: 'Filter every tile by…' }, ...options.map((c) => ({ value: c.name, label: c.name }))], f.column ?? '', (v) => { state.dashboardFilter = { column: v || null, value: null }; render(); }, { 'aria-label': 'Dashboard filter column' }),
+      col && [null, ...values].map((v) => el('button', {
+        class: `chip-btn${f.value === v ? ' on' : ''}`, type: 'button', 'aria-pressed': String(f.value === v),
+        onclick: () => { state.dashboardFilter = { column: col.name, value: v }; render(); },
+      }, v == null ? 'All' : v === 'yes' ? 'Yes' : v === 'no' ? 'No' : v))),
+    grid);
+  return el('div', { class: 'dashboard-view' },
+    el('div', { class: 'report-actions dash-actions' },
+      el('button', { class: 'btn small', type: 'button', onclick: () => document.querySelector('.dashboard')?.requestFullscreen?.() }, '⛶ Present full screen'),
+      el('button', { class: 'btn small', type: 'button', onclick: () => downloadDashboard() }, '⇩ Save as a web page')),
+    board);
+}
+
+/** A self-contained snapshot of the dashboard (charts and text) that opens in any browser. */
+async function downloadDashboard() {
+  const node = document.querySelector('.dashboard')?.cloneNode(true);
+  if (!node) return;
+  node.querySelectorAll('button, select, .chart-table-toggle').forEach((n) => n.remove());
+  let css = '';
+  try {
+    css = await (await fetch('styles.css')).text();
+  } catch {
+    /* offline without a cached stylesheet: the page still has its content */
+  }
+  const theme = document.documentElement.dataset.theme ? ` data-theme="${document.documentElement.dataset.theme}"` : '';
+  const title = state.dataset.name.replace(/[<>&"]/g, '');
+  const html = `<!doctype html><html lang="en"${theme}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}: dashboard</title><style>${css}\nbody{padding:24px}</style></head><body>${node.outerHTML}<p class="muted small" style="text-align:center">Made with Lumora · ${formatDate(Date.now())}</p></body></html>`;
+  download(`${state.dataset.name} dashboard.html`, html, 'text/html');
+}
+
+function addSummaryToReport() {
+  const text = summaryText(writeSummary(state.dataset, indices));
+  pin({ kind: 'text', title: 'Summary', note: text });
+}
+
+function showSummary() {
+  const sections = writeSummary(state.dataset, indices);
+  openDialog('This data in words',
+    el('div', { class: 'story' }, sections.map((s) => el('section', {}, el('h3', {}, s.heading), el('p', {}, s.text)))),
+    el('div', { class: 'dialog-actions' },
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => { $dialog.close(); addSummaryToReport(); } }, '📌 Add to report'),
+      el('button', {
+        class: 'btn small', type: 'button',
+        onclick: async () => {
+          try {
+            await navigator.clipboard.writeText(summaryText(sections));
+            toast('✓ Summary copied.', 'info');
+          } catch {
+            toast('Couldn’t copy automatically. Select the text and copy it by hand.');
+          }
+        },
+      }, 'Copy text')),
+    el('p', { class: 'muted small' }, 'Written by Lumora from your data, on this device. Check it before sharing.'));
+}
+
 function renderReport() {
+  const modeSwitch = el('div', { class: 'mode-switch', role: 'tablist', 'aria-label': 'Report or dashboard' },
+    [['report', '❏ Report'], ['dashboard', '▦ Dashboard']].map(([id, label]) => el('button', {
+      class: `chip-btn${state.reportMode === id ? ' on' : ''}`, type: 'button', role: 'tab', 'aria-selected': String(state.reportMode === id),
+      onclick: () => { state.reportMode = id; render(); },
+    }, label)));
+  if (state.reportMode === 'dashboard' && state.report.length) return el('div', { class: 'report-view' }, modeSwitch, renderDashboard());
   return el('div', { class: 'report-view' },
+    state.report.length > 0 && modeSwitch,
     el('div', { class: 'report-toolbar' },
       el('div', {},
         el('h2', { class: 'report-heading' }, `${state.dataset.name}: report`),
         el('p', { class: 'muted small report-meta' }, `${plural(state.dataset.rowCount, 'row')} · ${formatDate(Date.now())}${state.steps.length ? ` · ${plural(state.steps.length, 'cleaning step')}` : ''}`)),
       el('div', { class: 'report-actions' },
         el('button', { class: 'btn small', type: 'button', onclick: () => pin({ kind: 'text', title: 'Notes' }) }, '+ Add text'),
+        el('button', { class: 'btn small', type: 'button', onclick: addSummaryToReport }, '✍ Write a summary for me'),
         el('button', { class: 'btn small primary', type: 'button', disabled: !state.report.length, onclick: printReport }, '🖨 Print / Save as PDF'))),
     state.report.length
       ? state.report.map(renderReportItem)
@@ -2282,6 +2419,8 @@ function paletteCommands() {
     if (state.filters.length) add('Action', '✕', 'Clear all filters', () => { state.filters = []; update(); });
     if (state.steps.length) add('Action', '↶', `Undo: ${describeStep(state.steps.at(-1))}`, undo, 'undo');
     add('Action', '♥', 'Check data health', () => goTab('clean'), 'problems issues quality fix');
+    add('Action', '✍', 'Describe this data in words', showSummary, 'summary story write explain');
+    if (state.report.length) add('Action', '▦', 'Open the dashboard', () => { state.reportMode = 'dashboard'; goTab('report'); }, 'tiles present');
     ANALYSIS_TOOLS.forEach((t) => add('Analysis', t.icon, t.question, () => openAnalysis(t.id), `analyse ${t.blurb}`));
     if (healthReady()) {
       const safe = healthIssues().filter((i) => i.safe).length;

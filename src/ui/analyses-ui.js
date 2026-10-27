@@ -8,7 +8,7 @@
 //   openChart(xName, yName)
 
 import { el, select } from './dom.js';
-import { renderChart } from './charts.js';
+import { chartWithTable } from './charts.js';
 import { formatNumber } from '../core/transform.js';
 import { compareGroups, defaultMeasure, explainChange, groupingColumns, textThemes, topContributors, unusualPoints } from '../core/analyses.js';
 import { delayedEffect, findGroups, funnel, idColumns, measureColumns, nestedSteps, predictWhatIf, returnRates, trendAndPattern, whatIfModel } from '../core/analyses-more.js';
@@ -151,8 +151,8 @@ export function createAnalysesUI(ctx) {
     return [
       el('p', { class: 'analysis-answer' }, r.answer),
       notes.map((n) => el('p', { class: 'muted small analysis-note' }, `ⓘ ${n}`)),
-      r.chart && el('div', { class: 'card chart-card' }, el('div', { class: 'chart-wrap' }, renderChart(r.chart))),
-      !compact && r.patternChart && el('div', { class: 'card chart-card' }, el('h3', {}, 'The weekly pattern'), el('div', { class: 'chart-wrap' }, renderChart(r.patternChart))),
+      r.chart && el('div', { class: 'card chart-card' }, chartWithTable(r.chart)),
+      !compact && r.patternChart && el('div', { class: 'card chart-card' }, el('h3', {}, 'The weekly pattern'), chartWithTable(r.patternChart)),
     ];
   }
 

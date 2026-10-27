@@ -1,10 +1,22 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '0.10.0',
+    date: '2026-10-27',
+    items: [
+      'Dashboards: switch the Report tab to Dashboard to see everything you pinned as tiles, filter every tile with one click (e.g. Rainy: Yes), present it full screen, or save it as a web page anyone can open.',
+      '“Describe this data in words”: Lumora writes a short plain-English summary of your data (quality, trend, latest change, what drives it). Add it to your report and edit it.',
+      'New charts: one line per group, stacked bars (choose “Split bars by”), and a calendar heatmap of daily totals.',
+      'Add notes to line charts, such as “new menu launched”, shown at that date.',
+      '“Show the numbers” under every chart, for exact values and screen readers.',
+      'Charts say the unit when your data has one, e.g. “sum of revenue ($)”.',
+    ],
+  },
   {
     version: '0.9.0',
     date: '2026-10-27',

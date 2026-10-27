@@ -120,6 +120,34 @@ export function aggregate(values, fn) {
   }
 }
 
+const unitCache = new WeakMap();
+
+/**
+ * The unit a number column was written with: "$", "€", "£", "¥" or "%" when most values
+ * carry it (e.g. "$1,200" or "45%"), otherwise null. Used to label charts and tables.
+ */
+export function columnUnit(col) {
+  if (!col || col.type !== 'number') return null;
+  if (unitCache.has(col.raw)) return unitCache.get(col.raw);
+  let seen = 0;
+  const counts = { $: 0, '€': 0, '£': 0, '¥': 0, '%': 0 };
+  for (let i = 0; i < col.raw.length && seen < 200; i++) {
+    const r = String(col.raw[i] ?? '').trim();
+    if (!r || col.values[i] == null) continue;
+    seen++;
+    const m = /^[-+(]?\s*([$€£¥])/.exec(r);
+    if (m) counts[m[1]]++;
+    if (r.endsWith('%')) counts['%']++;
+  }
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  const unit = seen && best[1] >= seen * 0.8 ? best[0] : null;
+  unitCache.set(col.raw, unit);
+  return unit;
+}
+
+/** "revenue ($)" when the column has a unit, otherwise just "revenue". */
+export const withUnit = (col) => (columnUnit(col) ? `${col.name} (${columnUnit(col)})` : col.name);
+
 const pad2 = (n) => String(n).padStart(2, '0');
 
 /** Bucket a timestamp into a sortable label: "2024", "2024-03", "2024-W09" or "2024-03-05". */

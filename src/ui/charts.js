@@ -1,6 +1,6 @@
 // SVG chart rendering. Colours come from CSS classes so charts follow the light/dark theme.
 
-import { svg } from './dom.js';
+import { el, svg } from './dom.js';
 import { niceTicks } from '../core/stats.js';
 import { formatDate, formatNumber } from '../core/transform.js';
 
@@ -180,7 +180,7 @@ export function scatterChart(data) {
 }
 
 export function lineChart(data) {
-  const m = { t: 20, r: 24, b: 52, l: 68 };
+  const m = { t: data.series || data.annotations?.length ? 36 : 20, r: 24, b: 52, l: 68 };
   const pts = data.points;
   const fc = data.forecast?.points ?? null;
   const [x0, x1] = extent([...pts.map((p) => p.x), ...(fc ? fc.map((p) => p.x) : [])]);
@@ -199,7 +199,25 @@ export function lineChart(data) {
     axis = xAxis(xt, x, m.t, H - m.b);
   }
   const fmtX = data.xIsDate ? (t) => (data.unit === 'month' ? formatDate(t).replace(/ \d+,/, '') : data.unit === 'year' ? String(new Date(t).getUTCFullYear()) : formatDate(t)) : formatNumber;
-  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.x).toFixed(1)},${y(p.y).toFixed(1)}`).join('');
+  const path = (list) => list.map((p, i) => `${i ? 'L' : 'M'}${x(p.x).toFixed(1)},${y(p.y).toFixed(1)}`).join('');
+  const notes = (data.annotations ?? []).filter((n) => n.x >= x0 && n.x <= x1).map((n, k) => [
+    svg('line', { class: 'note-line', x1: x(n.x), x2: x(n.x), y1: m.t - 4, y2: H - m.b }),
+    svg('text', { class: 'note-label', x: x(n.x) + 4, y: m.t + 8 + (k % 3) * 13, 'data-tip': `${fmtX(n.x)}: ${n.text}` }, truncate(n.text, 28)),
+  ]);
+  if (data.series) {
+    return frame(W, H, `Line chart of ${data.yLabel} over ${data.xLabel}, one line per ${data.colorLabel}`, [
+      yAxis(yt, y, m.l, W - m.r),
+      axis,
+      data.series.map((sr, g) => [
+        svg('path', { class: `series-line c${g}`, d: path(sr.points) }),
+        sr.points.length <= 80 && sr.points.map((p) => svg('circle', { class: `dot point c${g}`, cx: x(p.x), cy: y(p.y), r: 3, 'data-tip': `${sr.label}, ${fmtX(p.x)}: ${formatNumber(p.y)}` })),
+      ]),
+      legendRow(data.legend, m.l),
+      notes,
+      axisTitles(data.xLabel, data.yLabel, m, W, H),
+    ]);
+  }
+  const d = path(pts);
   const area = `${d}L${x(pts[pts.length - 1].x).toFixed(1)},${y(yt[0])}L${x(pts[0].x).toFixed(1)},${y(yt[0])}Z`;
   return frame(W, H, `Line chart of ${data.yLabel} over ${data.xLabel}`, [
     yAxis(yt, y, m.l, W - m.r),
@@ -215,6 +233,7 @@ export function lineChart(data) {
       svg('circle', { class: 'anomaly', cx: x(h.x), cy: y(h.y), r: 7, 'data-tip': h.label }),
       svg('circle', { class: 'anomaly-dot', cx: x(h.x), cy: y(h.y), r: 3 }),
     ]),
+    notes,
     axisTitles(data.xLabel, data.yLabel, m, W, H),
   ]);
 }
@@ -318,8 +337,145 @@ export function sparkHistogram(bins) {
   );
 }
 
+/** Bars split into coloured parts (one per group), with a legend. */
+export function stackedBarChart(data) {
+  const { bars } = data;
+  const longest = Math.max(...bars.map((b) => Math.min(24, b.label.length)));
+  const m = { t: 36, r: 70, b: 44, l: Math.min(200, 16 + longest * 7.2) };
+  const rowH = 26;
+  const height = m.t + m.b + bars.length * rowH;
+  const ticks = niceTicks(0, Math.max(...bars.map((b) => b.value)), 5);
+  const x = scale(0, ticks[ticks.length - 1], m.l, W - m.r);
+  return frame(W, height, `Stacked bar chart of ${data.valueLabel} by ${data.xLabel}, split by ${data.colorLabel}`, [
+    legendRow(data.legend, m.l),
+    ticks.map((t) => [
+      svg('line', { class: 'grid', x1: x(t), x2: x(t), y1: m.t, y2: height - m.b }),
+      svg('text', { class: 'tick', x: x(t), y: height - m.b + 18, 'text-anchor': 'middle' }, formatNumber(t)),
+    ]),
+    bars.map((b, i) => {
+      const top = m.t + i * rowH + 4;
+      let start = 0;
+      return [
+        svg('text', { class: 'tick label', x: m.l - 8, y: top + (rowH - 8) / 2, 'text-anchor': 'end', 'dominant-baseline': 'middle' }, truncate(b.label, 24)),
+        b.parts.map((v, g) => {
+          if (!v) return null;
+          const rect = svg('rect', { class: `stack c${g}`, x: x(start), y: top, width: Math.max(0.5, x(start + v) - x(start)), height: rowH - 8, 'data-tip': `${b.label} · ${data.legend[g].label}: ${formatNumber(v)} (${Math.round((v / b.value) * 100)}%)` });
+          start += v;
+          return rect;
+        }),
+        svg('text', { class: 'value', x: x(b.value) + 6, y: top + (rowH - 8) / 2, 'dominant-baseline': 'middle' }, formatNumber(b.value)),
+      ];
+    }),
+    svg('text', { class: 'axis-title', x: m.l + (W - m.l - m.r) / 2, y: height - 6, 'text-anchor': 'middle' }, data.valueLabel),
+  ]);
+}
+
+/** One square per day, darker for bigger totals: weeks run left to right, Monday at the top. */
+export function calendarChart(data) {
+  const size = 12;
+  const gap = 2;
+  const left = 34;
+  const top = 22;
+  const first = data.cells[0].day;
+  const firstWeekday = (new Date(first).getUTCDay() + 6) % 7;
+  const weeks = Math.ceil((data.cells.length + firstWeekday) / 7);
+  const width = left + weeks * (size + gap) + 10;
+  const height = top + 7 * (size + gap) + 30;
+  const values = data.cells.map((c) => c.value).filter((v) => v != null);
+  const max = Math.max(...values, 0) || 1;
+  const months = [];
+  return frame(Math.max(width, 300), height, `Calendar heatmap of ${data.valueLabel} per day`, [
+    ['Mon', 'Wed', 'Fri'].map((d, k) => svg('text', { class: 'tick label', x: left - 6, y: top + (k * 2) * (size + gap) + size - 2, 'text-anchor': 'end' }, d)),
+    data.cells.map((c, k) => {
+      const pos = k + firstWeekday;
+      const wk = Math.floor(pos / 7);
+      const dow = pos % 7;
+      const date = new Date(c.day);
+      if (date.getUTCDate() === 1) months.push(svg('text', { class: 'tick label', x: left + wk * (size + gap), y: top - 8 }, formatDate(c.day).replace(/ \d+,.*/, '')));
+      const level = c.value == null ? null : Math.ceil((c.value / max) * 4);
+      return svg('rect', { class: `cal-day l${level ?? 'x'}`, x: left + wk * (size + gap), y: top + dow * (size + gap), width: size, height: size, rx: 2, 'data-tip': `${formatDate(c.day)}: ${c.value == null ? 'no data' : formatNumber(c.value)}` });
+    }),
+    months,
+    svg('text', { class: 'axis-title', x: left, y: height - 6 }, `${data.valueLabel} per day · darker = more`),
+  ]);
+}
+
+/** The numbers behind a chart, as a plain table (for "Show the numbers" and screen readers). */
+export function chartTable(data) {
+  let headers;
+  let rows;
+  switch (data.type) {
+    case 'bar':
+      headers = [data.xLabel, data.valueLabel];
+      rows = data.bars.map((b) => [b.label, formatNumber(b.value) + (b.note ? ` (${b.note})` : '')]);
+      break;
+    case 'stacked':
+      headers = [data.xLabel, ...data.legend.map((l) => l.label), 'Total'];
+      rows = data.bars.map((b) => [b.label, ...b.parts.map(formatNumber), formatNumber(b.value)]);
+      break;
+    case 'histogram':
+      headers = [`${data.xLabel} from`, 'to', 'Rows'];
+      rows = data.bins.map((b) => [formatNumber(b.x0), formatNumber(b.x1), b.count]);
+      break;
+    case 'scatter':
+      headers = [data.xLabel, data.yLabel, ...(data.legend ? [data.colorLabel] : [])];
+      rows = data.points.slice(0, 500).map((p) => [formatNumber(p.x), formatNumber(p.y), ...(data.legend ? [data.legend[p.g]?.label ?? ''] : [])]);
+      break;
+    case 'box':
+      headers = [data.groupLabel ?? '', 'Rows', 'Min', 'Q1', 'Median', 'Q3', 'Max'];
+      rows = data.groups.map((g) => [g.label, g.stats.count, ...[g.stats.min, g.stats.q1, g.stats.median, g.stats.q3, g.stats.max].map(formatNumber)]);
+      break;
+    case 'calendar':
+      headers = ['Date', data.valueLabel];
+      rows = data.cells.filter((c) => c.value != null).map((c) => [formatDate(c.day), formatNumber(c.value)]);
+      break;
+    case 'line': {
+      const fmtX = (v) => (data.xIsDate ? formatDate(v) : formatNumber(v));
+      if (data.series) {
+        const xs = [...new Set(data.series.flatMap((s) => s.points.map((p) => p.x)))].sort((a, b) => a - b);
+        const lookup = data.series.map((s) => new Map(s.points.map((p) => [p.x, p.y])));
+        headers = [data.xLabel, ...data.series.map((s) => s.label)];
+        rows = xs.map((xv) => [fmtX(xv), ...lookup.map((m) => (m.has(xv) ? formatNumber(m.get(xv)) : ''))]);
+      } else {
+        headers = [data.xLabel, data.yLabel, ...(data.forecast?.points ? ['Forecast'] : [])];
+        rows = [...data.points.map((p) => [fmtX(p.x), formatNumber(p.y), ...(data.forecast?.points ? [''] : [])]),
+          ...(data.forecast?.points ?? []).map((p) => [fmtX(p.x), '', `${formatNumber(p.y)} (${formatNumber(p.lo)} to ${formatNumber(p.hi)})`])];
+      }
+      break;
+    }
+    default:
+      return null;
+  }
+  const more = data.type === 'scatter' && data.points.length > 500 ? `Showing the first 500 of ${data.points.length} points.` : null;
+  return el('div', { class: 'chart-table' },
+    el('div', { class: 'scroll-x' }, el('table', { class: 'data-table compact' },
+      el('thead', {}, el('tr', {}, headers.map((h, j) => el('th', { class: j ? 'num' : '' }, h)))),
+      el('tbody', {}, rows.map((r) => el('tr', {}, r.map((v, j) => el('td', { class: j ? 'num' : '' }, String(v)))))))),
+    more && el('p', { class: 'muted small' }, more));
+}
+
+/** A chart with a "Show the numbers" switch underneath. */
+export function chartWithTable(data) {
+  const chart = renderChart(data);
+  let table = null;
+  const holder = el('div', {});
+  const toggle = el('button', {
+    class: 'link-btn small', type: 'button', 'aria-expanded': 'false',
+    onclick: () => {
+      table ??= chartTable(data);
+      const open = toggle.getAttribute('aria-expanded') !== 'true';
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.textContent = open ? 'Hide the numbers' : 'Show the numbers';
+      holder.replaceChildren(...(open && table ? [table] : []));
+    },
+  }, 'Show the numbers');
+  return el('div', { class: 'chart-block' }, el('div', { class: 'chart-wrap' }, chart), el('div', { class: 'chart-table-toggle' }, toggle), holder);
+}
+
 export function renderChart(data) {
   switch (data.type) {
+    case 'stacked': return stackedBarChart(data);
+    case 'calendar': return calendarChart(data);
     case 'histogram': return histogramChart(data);
     case 'bar': return barChart(data);
     case 'scatter': return scatterChart(data);

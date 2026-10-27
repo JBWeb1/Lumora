@@ -1,6 +1,6 @@
 // Picks a sensible chart for the chosen columns and prepares the data to draw.
 
-import { dateBucket, aggregate, groupKey, naturalOrder } from './transform.js';
+import { dateBucket, aggregate, groupKey, naturalOrder, withUnit } from './transform.js';
 import { describe, frequencies, histogram, isNum, linearRegression, pearson } from './stats.js';
 import { forecastSeries } from './forecast.js';
 
@@ -10,7 +10,18 @@ export const CHART_TYPES = {
   scatter: { label: 'Scatter plot', term: 'scatter' },
   line: { label: 'Line chart', term: 'line' },
   box: { label: 'Box plot', term: 'box' },
+  stacked: { label: 'Stacked bars', term: 'bar' },
+  calendar: { label: 'Calendar heatmap', term: 'line' },
 };
+
+const MAX_SERIES = 6;
+
+/** The biggest groups of a column (for colours), plus a function giving each row's group number. */
+function topGroups(colorCol, keys, max = MAX_SERIES) {
+  const top = frequencies(keys.filter((k) => k !== '(missing)')).slice(0, max).map((f) => f.value);
+  const others = keys.some((k) => !top.includes(k));
+  return { labels: [...top, ...(others ? ['Other'] : [])], index: (k) => (top.includes(k) ? top.indexOf(k) : top.length) };
+}
 
 const isGroupable = (c) => c && (c.type === 'category' || c.type === 'boolean' || c.type === 'text');
 
@@ -68,7 +79,7 @@ const MAX_POINTS = 5000;
  * Prepare chart data. Returns { type, ...data } or { error } when the columns don't fit the chart.
  * options: { type, x, y, agg }  (x / y are column indices; y may be null)
  */
-export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mean', color = null, forecast = null }) {
+export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mean', color = null, forecast = null, notes = null }) {
   let xCol = dataset.columns[x];
   let yCol = y == null ? null : dataset.columns[y];
   if (!xCol) return { error: 'Pick a column for the X axis.' };
@@ -78,7 +89,7 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
     if (xCol.type !== 'number') return { error: `A histogram needs a number column. ${xCol.name} is ${xCol.type}.` };
     const xs = col(xCol).filter(isNum);
     if (!xs.length) return { error: 'No numbers to plot.' };
-    return { type, xLabel: xCol.name, bins: histogram(xs), stats: describe(xs) };
+    return { type, xLabel: withUnit(xCol), bins: histogram(xs), stats: describe(xs) };
   }
 
   if (type === 'scatter') {
@@ -104,7 +115,7 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
       const step = points.length / MAX_POINTS;
       points = Array.from({ length: MAX_POINTS }, (_, k) => points[Math.floor(k * step)]);
     }
-    return { type, xLabel: xCol.name, yLabel: yCol.name, points, total, regression: linearRegression(xv, yv), r: pearson(xv, yv), legend, colorLabel: legend ? colorCol.name : null };
+    return { type, xLabel: withUnit(xCol), yLabel: withUnit(yCol), points, total, regression: linearRegression(xv, yv), r: pearson(xv, yv), legend, colorLabel: legend ? colorCol.name : null };
   }
 
   if (type === 'line') {
@@ -121,6 +132,28 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
       groups.get(key).push(yv ? yv[k] : 1);
     });
     const fn = yCol ? agg : 'count';
+    const toPoints = (map) => [...map.entries()]
+      .map(([key, vals]) => ({ x: unit ? bucketStart(key, unit) : key, y: aggregate(vals, fn) }))
+      .filter((p) => isNum(p.y))
+      .sort((a, b) => a.x - b.x);
+    // Optional: one line per group of a category column (the biggest few).
+    const colorCol = color == null ? null : dataset.columns[color];
+    if (isGroupable(colorCol)) {
+      const keys = col(colorCol).map((v) => (v == null ? '(missing)' : String(groupKey(colorCol, v))));
+      const { labels, index } = topGroups(colorCol, keys);
+      const maps = labels.map(() => new Map());
+      xv.forEach((v, k) => {
+        if (!isNum(v)) return;
+        const key = unit ? dateBucket(v, unit) : v;
+        const m = maps[index(keys[k])];
+        if (!m.has(key)) m.set(key, []);
+        m.get(key).push(yv ? yv[k] : 1);
+      });
+      const series = labels.map((label, g) => ({ label, points: toPoints(maps[g]) })).filter((sr) => sr.points.length);
+      if (!series.length) return { error: 'Nothing to plot.' };
+      const allPoints = series.flatMap((sr) => sr.points);
+      return { type, xLabel: xCol.name, yLabel: yCol ? `${agg} of ${withUnit(yCol)}` : 'Rows', xIsDate: xCol.type === 'date', unit, points: allPoints, series, legend: series.map((sr) => ({ label: sr.label })), colorLabel: colorCol.name, annotations: notesFor(notes, xCol) };
+    }
     const points = [...groups.entries()]
       .map(([key, vals]) => ({ x: unit ? bucketStart(key, unit) : key, y: aggregate(vals, fn) }))
       .filter((p) => isNum(p.y))
@@ -131,7 +164,7 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
     const smooth = window ? movingAverage(points, window) : null;
     // Optional forecast (date axis only): `forecast` is the number of periods to project.
     const projection = forecast && xCol.type === 'date' ? forecastSeries(points, { unit, horizon: forecast }) : null;
-    return { type, xLabel: xCol.name, yLabel: yCol ? `${agg} of ${yCol.name}` : 'Rows', xIsDate: xCol.type === 'date', unit, points, smooth, window, forecast: projection };
+    return { type, xLabel: xCol.name, yLabel: yCol ? `${agg} of ${withUnit(yCol)}` : 'Rows', xIsDate: xCol.type === 'date', unit, points, smooth, window, forecast: projection, annotations: notesFor(notes, xCol) };
   }
 
   if (type === 'box') {
@@ -141,7 +174,7 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
       if (xCol.type !== 'number') return { error: 'A box plot needs a number column.' };
       const xs = col(xCol).filter(isNum);
       if (!xs.length) return { error: 'No numbers to plot.' };
-      return { type, valueLabel: xCol.name, groups: [{ label: xCol.name, stats: describe(xs), values: xs }] };
+      return { type, valueLabel: withUnit(xCol), groups: [{ label: xCol.name, stats: describe(xs), values: xs }] };
     }
     if (yCol.type !== 'number') return { error: 'A box plot needs a number column to summarise.' };
     const gv = col(xCol);
@@ -159,7 +192,7 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
       .map(([label, xs]) => ({ label: String(label), stats: describe(xs), values: xs }))
       .sort((a, b) => b.stats.median - a.stats.median);
     if (!list.length) return { error: 'Nothing to plot.' };
-    return { type, groupLabel: xCol.name, valueLabel: yCol.name, groups: list, truncated: groups.size > 15 };
+    return { type, groupLabel: xCol.name, valueLabel: withUnit(yCol), groups: list, truncated: groups.size > 15 };
   }
 
   if (type === 'bar') {
@@ -190,8 +223,62 @@ export function buildChartData(dataset, indices, { type, x, y = null, agg = 'mea
       if (order) bars.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
     }
     const total = bars.length;
-    return { type, xLabel: xCol.name, valueLabel: yCol ? `${agg} of ${yCol.name}` : 'Rows', bars: bars.slice(0, MAX_BARS), total };
+    return { type, xLabel: xCol.name, valueLabel: yCol ? `${agg} of ${withUnit(yCol)}` : 'Rows', bars: bars.slice(0, MAX_BARS), total };
+  }
+
+  if (type === 'stacked') {
+    // Bars split into coloured parts: totals (sums or counts) by one column, broken down by another.
+    const colorCol = color == null ? null : dataset.columns[color];
+    if (!isGroupable(xCol) && xCol.type !== 'date') return { error: 'Stacked bars need a category or date column on the X axis.' };
+    if (!isGroupable(colorCol)) return { error: 'Choose a category column under “Split by colour” to stack the bars.' };
+    if (yCol && yCol.type !== 'number') yCol = null;
+    const xKeys = col(xCol).map((v) => (v == null ? '(missing)' : String(groupKey(xCol, v, 'month'))));
+    const cKeys = col(colorCol).map((v) => (v == null ? '(missing)' : String(groupKey(colorCol, v))));
+    const { labels, index } = topGroups(colorCol, cKeys);
+    const yv = yCol ? col(yCol) : null;
+    const byX = new Map();
+    xKeys.forEach((k, r) => {
+      if (k === '(missing)') return;
+      if (!byX.has(k)) byX.set(k, new Array(labels.length).fill(0));
+      byX.get(k)[index(cKeys[r])] += yv ? (isNum(yv[r]) ? yv[r] : 0) : 1;
+    });
+    let bars = [...byX.entries()].map(([label, parts]) => ({ label, parts, value: parts.reduce((s, v) => s + v, 0) }));
+    if (xCol.type === 'date') bars.sort((a, b) => (a.label < b.label ? -1 : 1));
+    else {
+      bars.sort((a, b) => b.value - a.value);
+      const order = bars.length <= MAX_BARS && naturalOrder(bars.map((b) => b.label));
+      if (order) bars.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
+    }
+    if (!bars.length) return { error: 'Nothing to plot.' };
+    const total = bars.length;
+    return { type, xLabel: xCol.name, valueLabel: yCol ? `Total ${withUnit(yCol)}` : 'Rows', colorLabel: colorCol.name, legend: labels.map((label) => ({ label })), bars: bars.slice(0, MAX_BARS), total };
+  }
+
+  if (type === 'calendar') {
+    // One square per day, coloured by its total, for the most recent year of data.
+    if (xCol.type !== 'date') return { error: 'A calendar heatmap needs a date column on the X axis.' };
+    if (yCol && yCol.type !== 'number') yCol = null;
+    const xv = col(xCol);
+    const yv = yCol ? col(yCol) : null;
+    const days = new Map();
+    xv.forEach((t, k) => {
+      if (!isNum(t)) return;
+      const d = Math.floor(t / 86400000);
+      days.set(d, (days.get(d) ?? 0) + (yv ? (isNum(yv[k]) ? yv[k] : 0) : 1));
+    });
+    if (!days.size) return { error: 'Nothing to plot.' };
+    const last = Math.max(...days.keys());
+    const first = Math.max(Math.min(...days.keys()), last - 370);
+    const cells = [];
+    for (let d = first; d <= last; d++) cells.push({ day: d * 86400000, value: days.get(d) ?? null });
+    return { type, xLabel: xCol.name, valueLabel: yCol ? `Total ${withUnit(yCol)}` : 'Rows', cells, truncated: Math.min(...days.keys()) < first };
   }
 
   return { error: 'Choose a chart type.' };
+}
+
+/** Chart notes ({ date: 'YYYY-MM-DD', text }) placed on a date axis. */
+function notesFor(notes, xCol) {
+  if (!notes?.length || xCol.type !== 'date') return null;
+  return notes.map((n) => ({ x: Date.parse(`${n.date}T00:00:00Z`), text: n.text })).filter((n) => Number.isFinite(n.x) && n.text);
 }
