@@ -709,3 +709,17 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .story h3 { margin: 0 0 4px; font-size: 1rem; }
 .story p { margin: 0; }
 @media print { .mode-switch, .dash-actions, .dash-filters select { display: none !important; } }
+input.narrow-wide { width: 8em; }
+.challenges { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.challenge { display: flex; flex-direction: column; gap: 8px; }
+.challenge.done { border-color: color-mix(in srgb, var(--good) 50%, var(--border)); }
+.challenge-head { display: flex; gap: 6px; }
+.challenge-q { margin: 0; font-weight: 600; }
+.challenge-feedback { margin: 0; font-size: 0.92rem; }
+.challenge-feedback:empty { display: none; }
+.challenge-feedback.good { color: var(--good); font-weight: 600; }
+.challenge-feedback.bad { color: var(--warn); }
+.pill.good { background: color-mix(in srgb, var(--good) 20%, var(--surface)); color: var(--good); font-weight: 600; }
+.link-input { flex: 1 1 280px; min-width: 0; }
+input[type='url'] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.45em 0.6em; }
+.hero .link-btn { margin-top: 10px; }

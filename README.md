@@ -8,6 +8,7 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 
 ## Features
 
+- **Open data from a web link** (a shared Google Sheet, a CSV on GitHub, an open-data portal) and press **↻ Refresh** later for the latest rows; cleaning steps, settings and the report are applied again. (The site must allow other apps to read the file; Google Sheets' *Publish to web → CSV* always works.)
 - **Instant loading, even for big files.** Drag and drop (or paste) **Excel (.xlsx)**, CSV, TSV or JSON. Workbooks with several sheets ask which sheet to open. Files are read in a background worker with a progress bar, so files with millions of rows don't freeze the page. A 1-million-row CSV (38 MB) loads in about 12 seconds, with the page responsive throughout. On very large data, the Overview's insights and Key drivers use an evenly spread sample, and say so. Counts, filters, tables, summaries and exports always use every row.
 - **Combine files.** Drop several files with the same columns at once to stack them, with a "source" column recording which file each row came from. Or use Clean → *Combine with another file* to stack rows or **join columns** on a shared column (orders + customers). Lumora suggests the matching columns, previews how many rows match, and warns about duplicates before you commit. Like every cleaning step, it can be undone.
 - **Two-way pivot tables.** In Summarize, choose *Split into columns by* to get, for example, average customers by weekday × month, with heat-map shading and correct totals.
@@ -41,12 +42,15 @@ Drop in a spreadsheet and Lumora tells you what is inside in plain English. It f
 - **Data health check.** A score out of 100 on the Overview, and a list of problems in the Clean tab: duplicate rows, spelling variants ("NY", "ny", " NY "), numbers or dates stored as text, values that can't be read as numbers, and empty or constant columns. Each has a one-click fix, and **Fix all safe problems** applies every fix that doesn't remove information.
 - **Cleaning recipes.** Lumora remembers your cleaning steps. When you open another file with the same columns (next month's export, say), it offers to clean it the same way in one click, matching column types first so a messier file gets the same treatment. Save a recipe as a file to share it or apply it later.
 - **Search everything (Ctrl+K / ⌘K).** Type a few letters to jump to a tab, open a column's details, chart or sort by a column, export, undo or start a lesson.
-- **Clean tab with undo.** Remove duplicates (across every column, or by a chosen column such as email), fill or drop missing values (median, mean, most common, previous row, or a value you choose), tidy text, **find and replace**, **split a column** ("London, UK" → two columns), **group values** (numbers into ranges such as "20 – 30", or the top categories plus "Other"), pull out **date parts** (month, weekday, quarter, year), rename or delete columns, and make filters permanent. Every action is recorded as a step. Undo with Ctrl+Z, remove any step from the history, or start over. The original file is never changed.
+- **Clean tab with undo.** Remove duplicates (across every column, or by a chosen column such as email), fill or drop missing values (median, mean, most common, previous row, or a value you choose), tidy text, **find and replace**, **split a column** ("London, UK" → two columns), **group values** (numbers into ranges such as "20 – 30", or the top categories plus "Other"), pull out **date parts** (month, weekday, quarter, year), rename or delete columns, **reshape** wide ↔ long (Jan, Feb, Mar columns into Month and Value rows, or back), and make filters permanent. Every action is recorded as a step. Undo with Ctrl+Z, remove any step from the history, or start over. Copy the steps as a list, or download them as a **Python (pandas) script** that repeats them exactly. The original file is never changed.
 - **Calculated columns** with a safe formula language, e.g. `round(revenue / customers, 2)` or `if(temperature_c > 20, "hot", "cold")`. It shows a live preview and suggests a fix when you mistype a column name.
 - **Color-by-category scatter plots** and **chart downloads** as high-resolution PNG or SVG.
 - **Filters** that apply everywhere: overview, table, charts and summaries.
 - **Group & summarize** (pivot tables) with count, sum, mean, median, min, max, standard deviation and distinct counts. Dates can be grouped by day, month, year or weekday.
 - **Searchable, sortable table** and **CSV export** of filtered data and summaries.
+- **Numbers from any country.** Decimal commas (1.234,50 · 12,5 €), accounting negatives (1,234), currency and percent signs; files in UTF-8, Windows-1252 or UTF-16; day-first or month-first dates decided per column.
+- **Warnings that keep you honest.** Comparisons flag small groups and Simpson's paradox (a difference that reverses inside every subgroup); what-if and delayed-effect answers remind you that related isn't the same as caused.
+- **Practice challenges.** Questions about the practice data in the Learn tab, checked instantly, with hints that point to the right tool.
 - **Learn mode.** Plain-English tips appear throughout the app, every statistic links to a glossary entry, and **twelve guided lessons** use built-in practice datasets.
 - **Self-updating.** New versions download in the background and install automatically. If you have data open, Lumora asks first so nothing is lost. A "What's new" note appears after each update. It also works offline and can be installed as an app.
 - Light and dark themes, a layout that works on phones, and no dependencies.
@@ -110,6 +114,9 @@ src/core/                 Pure, tested logic (no DOM):
   forms.js                  form maker: questions, validation, share links, answer codes
   analyses.js               change breakdown, group comparison, unusual days, 80/20, text themes
   story.js                  plain-English summary of a dataset
+  codegen.js                cleaning steps as text or a pandas script
+  links.js                  web links (Google Sheets, GitHub) to direct CSV
+  challenges.js             practice challenges with answers computed from the data
   analyses-more.js          natural groups, what-if model, return rates, funnels, trend/pattern, delayed effects
   encoding.js               file encodings (UTF-8, Windows-1252, UTF-16)
   formula.js                safe formula parser/evaluator for calculated columns

@@ -297,6 +297,70 @@ export function applyStep(ds, step) {
       const raw = result.labels.map((l) => l ?? '');
       return { ...ds, columns: [...ds.columns, makeColumn(name, raw, 'category')] };
     }
+    case 'unpivot': {
+      // Wide → long: columns such as Jan, Feb, Mar become rows of (Month, Value).
+      const stack = (step.columns ?? []).map((n) => ds.columns[indexOf(ds, n)]);
+      if (stack.length < 2) throw new StepError('Choose at least two columns to turn into rows.');
+      const keep = ds.columns.filter((c) => !stack.includes(c));
+      const nameCol = String(step.nameColumn ?? '').trim() || 'Column';
+      const valueCol = String(step.valueColumn ?? '').trim() || 'Value';
+      if (nameCol === valueCol || keep.some((c) => c.name === nameCol || c.name === valueCol)) throw new StepError(`Pick names for the new columns that aren't already used (${nameCol}, ${valueCol}).`);
+      const n = ds.rowCount * stack.length;
+      if (n > 5_000_000) throw new StepError('That would make more than 5 million rows. Choose fewer columns.');
+      const kept = keep.map((c) => ({ c, raw: new Array(n) }));
+      const names = new Array(n);
+      const values = new Array(n);
+      let k = 0;
+      for (let i = 0; i < ds.rowCount; i++) {
+        for (const s of stack) {
+          for (const x of kept) x.raw[k] = x.c.raw[i];
+          names[k] = s.name;
+          values[k] = s.raw[i];
+          k++;
+        }
+      }
+      return {
+        ...ds,
+        rowCount: n,
+        columns: [
+          ...kept.map((x) => makeColumn(x.c.name, x.raw, x.c.type, x.c.inferredType)),
+          makeColumn(nameCol, names),
+          makeColumn(valueCol, values),
+        ],
+      };
+    }
+    case 'widen': {
+      // Long → wide: the values of one column become new columns, filled from another.
+      const from = ds.columns[indexOf(ds, step.from)];
+      const val = ds.columns[indexOf(ds, step.values)];
+      const keys = (step.keys?.length ? step.keys : ds.columns.filter((c) => c !== from && c !== val).map((c) => c.name)).map((nm) => ds.columns[indexOf(ds, nm)]);
+      const labels = [...new Set(from.values.filter((v) => v != null).map((v) => toRaw(v, from.type)))];
+      if (labels.length > 200) throw new StepError(`${from.name} has ${labels.length} different values; at most 200 can become columns.`);
+      const rowsByKey = new Map();
+      for (let i = 0; i < ds.rowCount; i++) {
+        const key = keys.map((c) => c.raw[i]).join('\u0001');
+        if (!rowsByKey.has(key)) rowsByKey.set(key, { first: i, cells: new Map() });
+        const f = from.values[i];
+        if (f == null) continue;
+        const label = toRaw(f, from.type);
+        const cell = rowsByKey.get(key).cells;
+        if (!cell.has(label)) cell.set(label, []);
+        cell.get(label).push(val.values[i]);
+      }
+      const groups = [...rowsByKey.values()];
+      const combine = (vs) => {
+        const present = vs.filter((v) => v != null);
+        if (!present.length) return '';
+        if (val.type === 'number') return numberToRaw(step.combine === 'mean' ? mean(present) : present.reduce((a, b) => a + b, 0));
+        return toRaw(present[0], val.type);
+      };
+      let out = { ...ds, rowCount: groups.length, columns: keys.map((c) => makeColumn(c.name, groups.map((g) => c.raw[g.first]), c.type, c.inferredType)) };
+      for (const label of labels) {
+        const column = makeColumn(uniqueName(out, label), groups.map((g) => combine(g.cells.get(label) ?? [])));
+        out = { ...out, columns: [...out.columns, column] };
+      }
+      return out;
+    }
     case 'append':
       return appendRows(ds, step.data, { sourceColumn: step.sourceColumn ?? null, baseLabel: step.baseLabel ?? ds.name, otherLabel: step.data.name });
     case 'join':
@@ -328,6 +392,8 @@ export function describeStep(step) {
       return `Merge ${n} spelling variant${n === 1 ? '' : 's'} in ${step.column}`;
     }
     case 'split': return `Split ${step.column} on "${step.by}"`;
+    case 'unpivot': return `Turn ${step.columns.length} columns (${step.columns.slice(0, 3).join(', ')}${step.columns.length > 3 ? ', …' : ''}) into rows of ${step.nameColumn || 'Column'} and ${step.valueColumn || 'Value'}`;
+    case 'widen': return `Turn the values of ${step.from} into columns, filled with ${step.values}`;
     case 'segments': return `New column ${step.name}: ${step.k} natural groups from ${step.columns.join(', ')}`;
     case 'group': return step.method === 'bins'
       ? `New column ${step.name}: ${step.column} grouped into ranges${step.size ? ` of ${step.size}` : ''}`

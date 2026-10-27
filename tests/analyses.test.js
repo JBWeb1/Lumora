@@ -107,3 +107,16 @@ test('the default measure is the money column, never an ID', () => {
   assert.equal(defaultMeasure(ds('id,visits\n1,3\n2,4\n')), 'visits');
   assert.equal(defaultMeasure(ds('id,name\n1,a\n')), undefined, 'no measure: count rows');
 });
+
+test('compare warns about Simpson’s paradox', () => {
+  // Treatment A looks better overall, but B is better for both easy and hard cases.
+  const rows = ['treatment,difficulty,recovery'];
+  const add = (t, dfc, n, v) => { for (let k = 0; k < n; k++) rows.push(`${t},${dfc},${v + (k % 3)}`); };
+  add('A', 'easy', 40, 80); add('A', 'hard', 10, 40);
+  add('B', 'easy', 10, 85); add('B', 'hard', 40, 45);
+  const d = ds(rows.join('\n'));
+  const r = compareGroups(d, all(d), { column: 'treatment' });
+  assert.equal(r.rows[0].column, 'recovery');
+  assert.ok(r.rows[0].diff > 0, 'A is higher overall');
+  assert.match(r.warning, /within every difficulty group it is lower.*Simpson's paradox/);
+});

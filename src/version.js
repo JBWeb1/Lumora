@@ -1,10 +1,22 @@
 // The app version. Bump it (together with package.json, sw.js and the changelog)
 // for every release: that change is what tells installed copies to update.
 // `npm test` fails if the four ever disagree.
-export const VERSION = '0.10.0';
+export const VERSION = '1.0.0';
 
 /** User-facing release notes, newest first. Shown in "What's new". */
 export const CHANGELOG = [
+  {
+    version: '1.0.0',
+    date: '2026-10-27',
+    items: [
+      'Open data from a web link (a shared Google Sheet, a CSV on GitHub or an open-data site) and press ↻ Refresh any time to get the latest rows, with your cleaning steps and report applied again.',
+      'European numbers like 1.234,50 and 12,5 € are read correctly.',
+      'Reshape tables: turn columns such as Jan, Feb, Mar into rows (Month and Value), or spread rows back into columns.',
+      'Your cleaning steps as a list you can copy, or as a Python (pandas) script that repeats them exactly.',
+      'Comparisons warn when a difference reverses inside every subgroup (Simpson’s paradox).',
+      'Practice challenges in the Learn tab: questions about the practice data, checked instantly, with hints.',
+    ],
+  },
   {
     version: '0.10.0',
     date: '2026-10-27',

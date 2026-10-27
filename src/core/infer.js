@@ -21,10 +21,26 @@ export function isMissingRaw(raw) {
 
 const NUMBER_RE = /^[-+]?(?:[$€£¥]\s?)?(?:\d{1,3}(?:,\d{3})+|\d+)?(?:\.\d+)?(?:e[-+]?\d+)?%?$/i;
 
-/** Parse "1,234.5", "$20", "45%", "1e3", "(1,234)" (accounting negative) etc. Returns null when the text is not a number. */
-export function parseNumber(raw) {
+const COMMA_RE = /^[-+]?(?:[$€£¥]\s?)?(?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?\s?(?:[$€£¥]|%)?$/;
+
+/**
+ * Parse "1,234.5", "$20", "45%", "1e3", "(1,234)" (accounting negative) etc. Returns null when
+ * the text is not a number. With `decimalComma`, reads European style: "1.234,5" and "12,50 €".
+ */
+export function parseNumber(raw, decimalComma = false) {
   if (raw == null) return null;
   let s = String(raw).trim();
+  if (decimalComma) {
+    let sign = 1;
+    const paren = /^\((.+)\)$/.exec(s);
+    if (paren) {
+      s = paren[1].trim();
+      sign = -1;
+    }
+    if (!/\d/.test(s) || !COMMA_RE.test(s)) return null;
+    const v = Number(s.replace(/[$€£¥%\s]/g, '').replace(/\./g, '').replace(',', '.'));
+    return Number.isFinite(v) ? sign * v : null;
+  }
   let sign = 1;
   const paren = /^\((.+)\)$/.exec(s);
   if (paren) {
@@ -93,6 +109,26 @@ export function parseDate(raw, dayFirst = null) {
 }
 
 /**
+ * Decide once for a column whether numbers use a decimal comma ("12,50", "1.234,5").
+ * True when some values only make sense that way and none only make sense the usual way.
+ */
+export function detectDecimalComma(raws) {
+  let commaOnly = 0;
+  let dotOnly = 0;
+  let seen = 0;
+  for (const r of raws) {
+    if (r == null || isMissingRaw(r)) continue;
+    const s = String(r).trim();
+    if (++seen > 5000) break;
+    const usual = parseNumber(s);
+    const comma = parseNumber(s, true);
+    if (comma != null && (usual == null || usual !== comma) && /,\d{1,2}(?:\D*)$|\.\d{3},|^\d+,\d{4,}/.test(s)) commaOnly++;
+    else if (usual != null && comma == null) dotOnly++;
+  }
+  return commaOnly > 0 && dotOnly === 0;
+}
+
+/**
  * Decide once for a column whether 01/02/2024-style dates are day-first. Day-first when any
  * value's first number is over 12 (31/12/2023), or when they use dots (European style),
  * unless some value's second number is over 12 (then it must be month-first).
@@ -144,7 +180,8 @@ export function inferType(raws) {
   // Codes such as ZIP codes ("01234") or long IDs aren't quantities: as numbers they would
   // lose leading zeros or digits, so they stay as labels.
   const codeLike = sample.reduce((n, s) => n + (/^[-+]?0\d/.test(s) || /^\d{16,}$/.test(s) ? 1 : 0), 0);
-  if (share(parseNumber) >= 0.95 && codeLike / sample.length < 0.05) return 'number';
+  const comma = detectDecimalComma(sample);
+  if (share((s) => parseNumber(s, comma)) >= 0.95 && codeLike / sample.length < 0.05) return 'number';
   if (share(parseDate) >= 0.95) return 'date';
 
   const unique = new Set(present).size;
@@ -166,6 +203,10 @@ export function convertValues(raws, type) {
     const dayFirst = detectDayFirst(raws);
     return raws.map((r) => (isMissingRaw(r) ? null : parseDate(r, dayFirst)));
   }
+  if (type === 'number') {
+    const comma = detectDecimalComma(raws);
+    return raws.map((r) => (isMissingRaw(r) ? null : parseNumber(r, comma)));
+  }
   const parse = PARSERS[type];
   return raws.map((r) => (isMissingRaw(r) ? null : parse(r)));
 }
@@ -183,6 +224,21 @@ function uniqueNames(headers, width) {
   return names;
 }
 
+/**
+ * If a file clearly uses decimal commas (some column has values like "12,50"), numbers such as
+ * "1.100" in its other columns are thousands too (1100, not 1.1). Re-read those columns.
+ */
+function applyFileDecimalComma(columns) {
+  if (!columns.some((c) => c.type === 'number' && detectDecimalComma(c.raw))) return;
+  for (const c of columns) {
+    if (c.type !== 'number' || detectDecimalComma(c.raw)) continue;
+    const dotted = c.raw.filter((r) => r != null && /\./.test(r) && !isMissingRaw(r));
+    if (dotted.length && dotted.every((r) => /^[-+(]?\s*[$€£¥]?\s?[1-9]\d{0,2}(\.\d{3})+\)?\s?[$€£¥%]?$/.test(String(r).trim()))) {
+      c.values = c.raw.map((r) => (isMissingRaw(r) ? null : parseNumber(r, true)));
+    }
+  }
+}
+
 /** Build a column-oriented dataset from a header row and string rows. */
 export function buildDataset(name, headers, rows, onProgress) {
   let width = headers.length;
@@ -195,6 +251,7 @@ export function buildDataset(name, headers, rows, onProgress) {
     onProgress?.((j + 1) / width);
     return column;
   });
+  applyFileDecimalComma(columns);
   return { name, rowCount: rows.length, columns };
 }
 

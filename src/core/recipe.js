@@ -47,7 +47,14 @@ export function requiredColumns(steps) {
     s.columns?.forEach(use);
     s.filters?.forEach((f) => use(f.column));
     if (s.op === 'rename') made.add(s.to);
+    use(s.from);
+    use(s.values);
+    s.keys?.forEach(use);
     if (['formula', 'group', 'dateParts', 'segments'].includes(s.op)) made.add(s.name);
+    if (s.op === 'unpivot') {
+      made.add(s.nameColumn || 'Column');
+      made.add(s.valueColumn || 'Value');
+    }
     if (s.op === 'split') splitFrom.push(s.column);
   }
   return [...needed];

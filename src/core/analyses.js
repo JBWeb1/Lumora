@@ -255,9 +255,13 @@ export function compareGroups(ds, indices, { column, a, b } = {}) {
     if (others.length) answer += ` They also differ in ${others.map((r) => r.column).join(' and ')}.`;
   } else answer = `“${ga}” and “${gb}” look much the same: no number column differs by more than could be luck.`;
   const small = Math.min(rowsA.length, rowsB.length) < 10;
+  const reversal = top ? simpsonCheck(ds, indices, col, ga, gb, top, options) : null;
   return {
     answer,
-    warning: small ? `One group has fewer than 10 rows, so treat these differences with caution.` : null,
+    warning: [
+      small && 'One group has fewer than 10 rows, so treat these differences with caution.',
+      reversal,
+    ].filter(Boolean).join(' ') || null,
     column: col.name,
     columnOptions: options.map((c) => c.name),
     groups: values,
@@ -273,6 +277,37 @@ export function compareGroups(ds, indices, { column, a, b } = {}) {
       total: rows.length,
     } : null,
   };
+}
+
+/**
+ * Simpson's paradox: the overall difference points one way, but inside every group of some
+ * other column it points the other way (because the groups are mixed differently).
+ */
+function simpsonCheck(ds, indices, split, ga, gb, top, options) {
+  const measure = colByName(ds, top.column);
+  const sign = Math.sign(top.diff);
+  for (const other of options) {
+    if (other === split) continue;
+    const levels = new Map();
+    for (const i of indices) {
+      const v = other.values[i];
+      if (v == null) continue;
+      const k = keyOf(other, v);
+      if (!levels.has(k)) levels.set(k, { a: [], b: [] });
+      const g = keyOf(split, split.values[i]);
+      const x = measure.values[i];
+      if (x == null) continue;
+      if (g === ga) levels.get(k).a.push(x);
+      else if (g === gb) levels.get(k).b.push(x);
+    }
+    if (levels.size < 2 || levels.size > 8) continue;
+    const usable = [...levels.entries()].filter(([, l]) => l.a.length >= 5 && l.b.length >= 5);
+    if (usable.length < 2) continue;
+    if (usable.every(([, l]) => Math.sign(mean(l.a) - mean(l.b)) === -sign)) {
+      return `Careful: overall “${ga}” has ${sign > 0 ? 'higher' : 'lower'} ${measure.name}, but within every ${other.name} group it is ${sign > 0 ? 'lower' : 'higher'}. The groups are mixed differently across ${other.name} (this is called Simpson's paradox), so compare within ${other.name} too.`;
+    }
+  }
+  return null;
 }
 
 function variance(xs) {

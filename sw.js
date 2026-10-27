@@ -6,7 +6,7 @@
 // told an update is ready and switches over (immediately when idle, or when the user
 // agrees if they have work open). Old caches are deleted afterwards.
 
-const VERSION = '0.10.0';
+const VERSION = '1.0.0';
 const CACHE = `lumora-${VERSION}`;
 
 // Everything the app needs to run offline. `npm test` checks this list is complete.
@@ -25,8 +25,10 @@ const APP_FILES = [
   './src/core/analyses-more.js',
   './src/core/analyses.js',
   './src/core/ask.js',
+  './src/core/challenges.js',
   './src/core/chartspec.js',
   './src/core/clean.js',
+  './src/core/codegen.js',
   './src/core/combine.js',
   './src/core/csv.js',
   './src/core/drivers.js',
@@ -38,6 +40,7 @@ const APP_FILES = [
   './src/core/infer.js',
   './src/core/insights.js',
   './src/core/learn.js',
+  './src/core/links.js',
   './src/core/overview.js',
   './src/core/pack.js',
   './src/core/palette.js',

@@ -145,3 +145,60 @@ test('command palette matching', () => {
   assert.equal(rankCommands(cmds, '').length, 3);
   assert.deepEqual(rankCommands([{ title: 'Overview', keywords: 'tab overview' }], 'chart amount'), [], 'keywords that do not match never count');
 });
+
+test('reshape wide to long and back', async () => {
+  const { datasetFromText } = await import('../src/core/infer.js');
+  const d = datasetFromText('shop,Jan,Feb,Mar\nNorth,10,12,9\nSouth,5,6,7\n', 'wide.csv');
+  const long = applyStep(d, { op: 'unpivot', columns: ['Jan', 'Feb', 'Mar'], nameColumn: 'Month', valueColumn: 'Sales' });
+  assert.equal(long.rowCount, 6);
+  assert.deepEqual(long.columns.map((c) => c.name), ['shop', 'Month', 'Sales']);
+  assert.deepEqual(long.columns[1].values, ['Jan', 'Feb', 'Mar', 'Jan', 'Feb', 'Mar']);
+  assert.equal(long.columns[2].type, 'number');
+  assert.deepEqual(long.columns[2].values, [10, 12, 9, 5, 6, 7]);
+  const g = groupBy(long, [...Array(6).keys()], { by: 1, aggs: [{ fn: 'sum', column: 2 }] });
+  assert.deepEqual(g.rows.map((r) => r[0]), ['Jan', 'Feb', 'Mar'], 'months stay in calendar order');
+  const wide = applyStep(long, { op: 'widen', from: 'Month', values: 'Sales', keys: ['shop'] });
+  assert.deepEqual(wide.columns.map((c) => c.name), ['shop', 'Jan', 'Feb', 'Mar']);
+  assert.deepEqual(wide.columns[2].values, [12, 6]);
+  assert.throws(() => applyStep(d, { op: 'unpivot', columns: ['Jan'] }), /at least two/);
+  assert.match(describeStep({ op: 'unpivot', columns: ['Jan', 'Feb'], nameColumn: 'Month', valueColumn: 'Sales' }), /into rows of Month and Sales/);
+});
+
+test('decimal-comma numbers', async () => {
+  const { datasetFromText, detectDecimalComma } = await import('../src/core/infer.js');
+  const d = datasetFromText('Artikel;Preis\nA;1.234,50\nB;99,95\nC;12,5 €\n', 'de.csv');
+  assert.equal(d.columns[1].type, 'number');
+  assert.deepEqual(d.columns[1].values, [1234.5, 99.95, 12.5]);
+  const mixed = datasetFromText('shop;Jan;Mar;kg\nNorth;1.200,50;1.100;0.5\nSouth;800;900;1.25\n', 'eu.csv');
+  assert.deepEqual(mixed.columns[2].values, [1100, 900], 'thousands dots in a decimal-comma file');
+  assert.deepEqual(mixed.columns[3].values, [0.5, 1.25], 'real decimals are left alone');
+  assert.deepEqual(datasetFromText('a,b\n1.100,2\n3,4\n', 'us.csv').columns[0].values, [1.1, 3], 'no decimal commas in the file: 1.100 is 1.1');
+  assert.equal(detectDecimalComma(['1,234', '2,500']), false, '1,234 stays one thousand two hundred…');
+  assert.equal(detectDecimalComma(['1.5', '2,25']), false, 'mixed styles: no guessing');
+});
+
+test('web links: Google Sheets and GitHub links become direct CSV links', async () => {
+  const { dataUrl, nameFromUrl } = await import('../src/core/links.js');
+  assert.equal(dataUrl('https://docs.google.com/spreadsheets/d/abc_123/edit#gid=42').url, 'https://docs.google.com/spreadsheets/d/abc_123/export?format=csv&gid=42');
+  assert.equal(dataUrl('https://docs.google.com/spreadsheets/d/e/2PACX/pub?output=csv').url, 'https://docs.google.com/spreadsheets/d/e/2PACX/pub?output=csv');
+  assert.equal(dataUrl('https://github.com/o/r/blob/main/data/sales.csv').url, 'https://raw.githubusercontent.com/o/r/main/data/sales.csv');
+  assert.ok(dataUrl('not a link').error);
+  assert.ok(dataUrl('file:///etc/passwd').error);
+  assert.equal(nameFromUrl('https://example.org/files/sales%202024.csv?x=1'), 'sales 2024.csv');
+});
+
+test('practice challenges have answers worked out from the data', async () => {
+  const { CHALLENGES, checkChallenge } = await import('../src/core/challenges.js');
+  const { sampleCSV } = await import('../src/core/samples.js');
+  const { datasetFromText } = await import('../src/core/infer.js');
+  for (const c of CHALLENGES) {
+    const d = datasetFromText(sampleCSV(c.sample), `${c.sample}.csv`);
+    const answer = c.answer(d);
+    assert.ok(answer != null && answer !== '', c.id);
+    if (c.kind === 'choice') assert.ok(c.options(d).includes(answer), `${c.id}: ${answer} is one of the options`);
+    assert.equal(checkChallenge(c, d, answer).correct, true, c.id);
+  }
+  const rain = CHALLENGES.find((c) => c.id === 'coffee-rainy-days');
+  const d = datasetFromText(sampleCSV('coffee'), 'coffee.csv');
+  assert.equal(checkChallenge(rain, d, rain.answer(d) + 1).correct, false);
+});

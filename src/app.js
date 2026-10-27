@@ -33,6 +33,9 @@ import { FORM_KIND } from './core/forms.js';
 import { createFormsUI } from './ui/forms-ui.js';
 import { createAnalysesUI, TOOLS as ANALYSIS_TOOLS } from './ui/analyses-ui.js';
 import { summaryText, writeSummary } from './core/story.js';
+import { stepsToPython, stepsToText } from './core/codegen.js';
+import { dataUrl, nameFromUrl } from './core/links.js';
+import { CHALLENGES, checkChallenge } from './core/challenges.js';
 import { decodeText, isLumoraFile } from './core/encoding.js';
 
 // ---------- state ----------
@@ -75,6 +78,7 @@ const state = {
   page: null, // null (home or workspace) | 'forms' (form maker) | 'respond' (filling in a shared form)
   reportMode: 'report', // 'report' | 'dashboard'
   dashboardFilter: { column: null, value: null }, // one-click filter applied to every dashboard tile
+  source: null, // { url, fetched } when the data came from a web link (so it can be refreshed)
 };
 
 let indices = [];
@@ -223,6 +227,7 @@ function loadDataset(ds, overview = null) {
   state.steps = [];
   state.dataset = ds;
   state.page = null;
+  state.source = null;
   state.clean = {};
   state.addingFilter = null;
   state.projectId = newProjectId();
@@ -446,6 +451,74 @@ async function loadFiles(fileList) {
   if (skipped.length) setTimeout(() => toast(`${skipped.join(', ')} ${skipped.length === 1 ? 'has' : 'have'} different columns, so ${skipped.length === 1 ? 'it was' : 'they were'} not stacked. Use Clean → Combine with another file to join ${skipped.length === 1 ? 'it' : 'them'}.`), steps.length ? 4500 : 0);
 }
 
+// ---------- data from a web link ----------
+
+async function fetchText(url) {
+  let res;
+  try {
+    res = await fetch(url, { cache: 'no-store' });
+  } catch {
+    throw new Error('the site didn’t allow Lumora to read it (or you’re offline). Links that work: a Google Sheet published to the web as CSV, a raw file on GitHub, or an open-data portal’s CSV download.');
+  }
+  if (!res.ok) throw new Error(`the site answered “${res.status} ${res.statusText}”. Check the link is public.`);
+  const text = decodeText(await res.arrayBuffer());
+  if (/^\s*<(!doctype|html)/i.test(text)) throw new Error('that link opens a web page, not a data file. Use the link to the CSV file itself.');
+  return text;
+}
+
+async function openFromLink(input) {
+  const target = dataUrl(input);
+  if (target.error) return toast(target.error);
+  toast('Loading the data…', 'info');
+  try {
+    const text = await fetchText(target.url);
+    if (!loadText(text, nameFromUrl(target.url))) return;
+    state.source = { url: target.url, fetched: new Date().toISOString() };
+    render();
+    scheduleSave();
+    toast(`✓ Loaded ${plural(state.dataset.rowCount, 'row')}. Use ↻ Refresh any time to get the latest data.`, 'info');
+  } catch (err) {
+    toast(`Couldn't open the link: ${err.message}${target.note ? ` ${target.note}` : ''}`);
+  }
+}
+
+/** Fetch the latest data from the link, then re-apply the cleaning steps, report and settings. */
+async function refreshFromLink() {
+  const src = state.source;
+  if (!src) return;
+  try {
+    const text = await fetchText(src.url);
+    const fresh = datasetFromText(text, nameFromUrl(src.url));
+    const before = state.dataset.rowCount;
+    const previous = state.original;
+    state.original = { ...fresh, name: previous.name };
+    if (!setSteps(state.steps)) {
+      state.original = previous;
+      return;
+    }
+    state.source = { ...src, fetched: new Date().toISOString() };
+    render();
+    const diff = state.dataset.rowCount - before;
+    toast(`↻ Refreshed: ${plural(state.dataset.rowCount, 'row')}${diff ? ` (${diff > 0 ? '+' : ''}${diff.toLocaleString('en-US')})` : ', no change in rows'}.`, 'info');
+  } catch (err) {
+    toast(`Couldn't refresh: ${err.message}`);
+  }
+}
+
+function openLinkDialog() {
+  const input = el('input', { type: 'url', class: 'link-input', placeholder: 'https://…', 'aria-label': 'Link to the data' });
+  openDialog('Open data from a web link',
+    el('p', {}, 'Paste a link to a CSV file or a shared Google Sheet. Lumora remembers the link, so you can press ↻ Refresh later to get the latest data, with your cleaning steps and report applied again.'),
+    el('form', { class: 'form-row', onsubmit: (e) => { e.preventDefault(); $dialog.close(); openFromLink(input.value); } },
+      input,
+      el('button', { class: 'btn primary small', type: 'submit' }, 'Open')),
+    el('ul', { class: 'muted small' },
+      el('li', {}, 'Google Sheets: Share → “Anyone with the link”, then paste the link. If it won’t load: File → Share → Publish to web → CSV.'),
+      el('li', {}, 'GitHub: paste the file’s page link; Lumora uses the raw file.'),
+      el('li', {}, 'Some websites don’t allow other apps to read their files; download the file and open it instead.')));
+  input.focus();
+}
+
 function loadSample(id) {
   const sample = SAMPLES.find((s) => s.id === id);
   if (!sample) {
@@ -501,7 +574,8 @@ function renderHome() {
       el('img', { class: 'hero-logo', src: 'assets/logo-192.png', alt: 'Lumora logo', width: 96, height: 96 }),
       el('h1', {}, 'Understand your data ', el('span', { class: 'glow' }, 'in seconds')),
       el('p', { class: 'lead' }, 'Lumora reads your spreadsheet, explains what is inside in plain English, and helps you build the right chart, even if you have never studied statistics.'),
-      drop),
+      drop,
+      el('button', { class: 'link-btn', type: 'button', onclick: openLinkDialog }, '🔗 Or open data from a web link (Google Sheets, CSV)')),
     recentWorkSection(),
     el('section', { class: 'collect' },
       el('div', { class: 'card collect-card' },
@@ -600,6 +674,7 @@ function renderFilterBar() {
         el('button', { class: 'chip-x', 'aria-label': `Remove filter ${describeFilter(f)}`, onclick: () => { state.filters.splice(i, 1); state.table.page = 0; update(); } }, '✕'))),
     state.addingFilter ? filterForm() : el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.addingFilter = { column: 0, op: FILTER_OPS[cols()[0].type][0], value: '' }; render(); } }, '+ Filter'),
     state.filters.length > 1 && el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.filters = []; update(); } }, 'Clear all'),
+    state.source && el('button', { class: 'btn ghost small', type: 'button', title: `Get the latest data from ${state.source.url}`, onclick: refreshFromLink }, `↻ Refresh (${timeAgo(state.source.fetched)})`),
     state.steps.length > 0 && el('span', { class: 'steps-pill' },
       el('button', { class: 'btn ghost small', type: 'button', onclick: () => { state.tab = 'clean'; render(); } }, `✎ ${plural(state.steps.length, 'cleaning step')}`),
       el('button', { class: 'btn small', type: 'button', title: `Undo: ${describeStep(state.steps.at(-1))} (Ctrl+Z)`, onclick: undo }, '↶ Undo')));
@@ -1389,6 +1464,19 @@ function renderClean() {
       el('button', { class: 'btn ghost small', type: 'button', disabled: !state.steps.length, onclick: () => { if (confirm('Remove all cleaning steps and go back to the original data?')) setSteps([]); } }, 'Start over'),
       el('button', { class: 'btn small', type: 'button', onclick: () => download(`${ds.name}-clean.csv`, datasetToCSV(ds, [...Array(ds.rowCount).keys()])) }, '⇩ Cleaned CSV'),
       el('button', { class: 'btn small', type: 'button', onclick: () => exportExcel(`${ds.name} clean`, [datasetSheet(ds, [...Array(ds.rowCount).keys()])]) }, '⇩ Cleaned Excel')),
+    state.steps.length > 0 && el('div', { class: 'history-actions' },
+      el('button', {
+        class: 'btn ghost small', type: 'button', title: 'Copy the steps as a numbered list',
+        onclick: async () => {
+          try {
+            await navigator.clipboard.writeText(stepsToText(state.steps, state.original.name));
+            toast('✓ Steps copied.', 'info');
+          } catch {
+            toast('Couldn’t copy automatically.');
+          }
+        },
+      }, '⧉ Copy steps'),
+      el('button', { class: 'btn ghost small', type: 'button', title: 'A Python (pandas) script that repeats these steps', onclick: () => download(`${state.original.name} cleaning.py`, stepsToPython(state.steps, `${state.original.name}.csv`), 'text/x-python') }, '⇩ As Python code')),
     el('h3', { class: 'recipe-head' }, 'Recipe'),
     el('p', { class: 'muted small' }, 'Save these steps and replay them on next month’s file in one click. Lumora also offers your latest recipe automatically when you open a file with the same columns.'),
     el('div', { class: 'history-actions' },
@@ -1400,7 +1488,7 @@ function renderClean() {
       healthCard(),
       el('h2', { class: 'clean-group' }, 'Fix problems'), dupCard, missingCard, textCard, replaceCard(),
       el('h2', { class: 'clean-group' }, 'Add columns'), formulaCard, groupCard(), datePartsCard(),
-      el('h2', { class: 'clean-group' }, 'Reshape'), splitCard(), renameCard, keepCard, combineCard()),
+      el('h2', { class: 'clean-group' }, 'Reshape'), splitCard(), reshapeCard(), renameCard, keepCard, combineCard()),
     history);
 }
 
@@ -1566,6 +1654,38 @@ function datePartsCard() {
       select(dates.map((n) => ({ value: n, label: n })), column, (v) => { f.dateCol = v; render(); }, { 'aria-label': 'Date column' }),
       select(Object.entries(DATE_PARTS).map(([value, p]) => ({ value, label: p.label })), part, (v) => { f.datePart = v; render(); }, { 'aria-label': 'Part of the date' }),
       el('button', { class: 'btn primary small', type: 'button', onclick: () => addStep({ op: 'dateParts', column, part, name }) }, `Add "${name}"`)));
+}
+
+/** Wide ↔ long: e.g. Jan, Feb, Mar columns into Month and Value rows, or the other way round. */
+function reshapeCard() {
+  const f = state.clean;
+  const ds = state.dataset;
+  const names = cols().map((c) => c.name);
+  const mode = f.reshape ?? 'long';
+  const modeSelect = select([{ value: 'long', label: 'Columns into rows (wide → long)' }, { value: 'wide', label: 'Rows into columns (long → wide)' }], mode, (v) => { f.reshape = v; render(); }, { 'aria-label': 'Reshape direction' });
+  if (mode === 'long') {
+    // Default: the number columns (typical for one column per month or year).
+    const chosen = new Set((f.unpivotCols ?? cols().filter((c) => c.type === 'number').map((c) => c.name)).filter((n) => names.includes(n)));
+    f.unpivotCols = [...chosen];
+    return actionCard('Reshape the table', null, 'Charts and summaries work best with one row per observation. If you have one column per month (Jan, Feb, Mar…), turn them into a Month column and a Value column.',
+      el('div', { class: 'form-row' }, modeSelect),
+      el('div', { class: 'picker-options' }, names.map((n) => el('label', { class: 'q-required' },
+        el('input', { type: 'checkbox', checked: chosen.has(n), onchange: (e) => { if (e.target.checked) chosen.add(n); else chosen.delete(n); f.unpivotCols = names.filter((x) => chosen.has(x)); render(); } }), ` ${n}`))),
+      el('div', { class: 'form-row' },
+        el('label', { class: 'muted small' }, 'New columns: ', el('input', { type: 'text', class: 'narrow-wide', value: f.unpivotName ?? 'Column', 'aria-label': 'Name for the column of former column names', oninput: (e) => { f.unpivotName = e.target.value; } })),
+        el('label', { class: 'muted small' }, 'and ', el('input', { type: 'text', class: 'narrow-wide', value: f.unpivotValue ?? 'Value', 'aria-label': 'Name for the column of values', oninput: (e) => { f.unpivotValue = e.target.value; } })),
+        el('button', { class: 'btn primary small', type: 'button', disabled: chosen.size < 2, onclick: () => addStep({ op: 'unpivot', columns: [...chosen], nameColumn: f.unpivotName ?? 'Column', valueColumn: f.unpivotValue ?? 'Value' }) }, `Turn ${chosen.size} columns into rows`)),
+      el('p', { class: 'muted small' }, `${plural(ds.rowCount, 'row')} would become ${plural(ds.rowCount * Math.max(chosen.size, 1), 'row')}.`));
+  }
+  const from = names.includes(f.widenFrom) ? f.widenFrom : (f.widenFrom = cols().find((c) => c.type === 'category')?.name ?? names[0]);
+  const values = names.includes(f.widenValues) && f.widenValues !== from ? f.widenValues : (f.widenValues = cols().find((c) => c.type === 'number' && c.name !== from)?.name ?? names.find((n) => n !== from));
+  return actionCard('Reshape the table', null, 'Spread a column of labels into separate columns, e.g. a Month column with a Sales column becomes one sales column per month. Other columns identify each row.',
+    el('div', { class: 'form-row' }, modeSelect),
+    el('div', { class: 'form-row' },
+      el('label', { class: 'muted small' }, 'New columns from ', select(names.map((n) => ({ value: n, label: n })), from, (v) => { f.widenFrom = v; render(); }, { 'aria-label': 'Column whose values become columns' })),
+      el('label', { class: 'muted small' }, 'filled with ', select(names.filter((n) => n !== from).map((n) => ({ value: n, label: n })), values, (v) => { f.widenValues = v; render(); }, { 'aria-label': 'Column with the values' })),
+      el('button', { class: 'btn primary small', type: 'button', onclick: () => addStep({ op: 'widen', from, values, combine: 'sum' }) }, 'Reshape')),
+    el('p', { class: 'muted small' }, 'Where several rows share the same label, number values are added up.'));
 }
 
 // ---------- step history and recipes ----------
@@ -1747,6 +1867,7 @@ function viewByNames() {
     filters: filterRefs(state.filters),
     chart: chartRefs(state.chart),
     summarize: summarizeRefs(state.summarize),
+    source: state.source,
     driversTarget: nameOf(state.drivers.target),
     question: state.ask.question,
   };
@@ -1768,6 +1889,7 @@ function restoreView(view = {}) {
   state.drivers = { target: idxOf(view.driversTarget) };
   state.ask = { question: view.question ?? '', parsed: null };
   if (TABS.some((t) => t.id === view.tab)) state.tab = view.tab;
+  state.source = view.source?.url ? view.source : null;
 }
 
 // ---------- saving ----------
@@ -2233,12 +2355,59 @@ function renderReport() {
 
 // ---------- learn ----------
 
+// Practice datasets, built once, for checking challenge answers.
+const practiceData = new Map();
+const practice = (id) => {
+  if (!practiceData.has(id)) practiceData.set(id, datasetFromText(sampleCSV(id), `${id}.csv`));
+  return practiceData.get(id);
+};
+
+function challengeCard(c) {
+  const done = store.get('challenges', {});
+  const ds = practice(c.sample);
+  let given = '';
+  const feedback = el('p', { class: 'challenge-feedback', 'aria-live': 'polite' });
+  const input = c.kind === 'number'
+    ? el('input', { type: 'text', inputmode: 'decimal', class: 'narrow-wide', placeholder: 'Your answer', 'aria-label': `Answer: ${c.question}`, oninput: (e) => { given = e.target.value; } })
+    : select([{ value: '', label: 'Choose…' }, ...c.options(ds).map((o) => ({ value: o, label: o }))], '', (v) => { given = v; }, { 'aria-label': `Answer: ${c.question}` });
+  const check = (e) => {
+    e.preventDefault();
+    if (!String(given).trim()) return;
+    const r = checkChallenge(c, ds, given);
+    feedback.className = `challenge-feedback ${r.correct ? 'good' : 'bad'}`;
+    if (r.correct) {
+      feedback.textContent = '✓ Correct! Well done.';
+      store.set('challenges', { ...store.get('challenges', {}), [c.id]: true });
+      card.classList.add('done');
+    } else feedback.replaceChildren('Not quite. Hint: ', c.hint);
+  };
+  const card = el('article', { class: `card challenge${done[c.id] ? ' done' : ''}` },
+    el('div', { class: 'challenge-head' }, el('span', { class: 'pill' }, c.level), done[c.id] && el('span', { class: 'pill good' }, '✓ Solved')),
+    el('p', { class: 'challenge-q' }, c.question),
+    el('form', { class: 'form-row', onsubmit: check },
+      input,
+      el('button', { class: 'btn primary small', type: 'submit' }, 'Check')),
+    feedback,
+    el('button', { class: 'link-btn small', type: 'button', onclick: () => { loadSample(c.sample); toast(`Practice data loaded. ${c.question}`, 'info'); } }, `Open the ${SAMPLES.find((s) => s.id === c.sample).name.toLowerCase()} data →`));
+  return card;
+}
+
+function renderChallenges() {
+  const done = store.get('challenges', {});
+  const solved = CHALLENGES.filter((c) => done[c.id]).length;
+  return el('section', {},
+    el('h2', {}, 'Practice challenges'),
+    el('p', { class: 'muted' }, `Answer questions about the practice data using Lumora. ${solved ? `You've solved ${solved} of ${CHALLENGES.length}.` : 'Each one has a hint if you get stuck.'}`),
+    el('div', { class: 'challenges' }, CHALLENGES.map(challengeCard)));
+}
+
 function renderLearn() {
   return el('div', { class: 'learn-view' },
     el('section', {},
       el('h2', {}, 'Guided lessons'),
       el('p', { class: 'muted' }, 'Each lesson loads practice data and takes you to the right place in Lumora.'),
       el('div', { class: 'lessons' }, LESSONS.map(lessonCard))),
+    renderChallenges(),
     el('section', {},
       el('h2', {}, 'Glossary'),
       el('div', { class: 'glossary' }, Object.entries(GLOSSARY).map(([, g]) =>
@@ -2440,6 +2609,8 @@ function paletteCommands() {
     });
   }
   add('App', '📂', 'Open a file', () => $fileInput.click(), 'load import csv excel');
+  add('App', '🔗', 'Open data from a web link', openLinkDialog, 'url google sheets online csv');
+  if (state.source) add('Action', '↻', 'Refresh data from the link', refreshFromLink, 'update latest reload');
   add('App', '📝', 'Form maker: make a form to collect data', openFormMaker, 'survey questionnaire collect sign up');
   add('App', '◐', 'Switch dark / light mode', () => $theme.click(), 'theme');
   add('App', '💡', `${state.learn ? 'Turn off' : 'Turn on'} Learn mode`, () => $learn.click(), 'explanations tips');
